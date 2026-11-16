@@ -7,7 +7,9 @@ import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 import { ShaderPass } from "three/examples/jsm/postprocessing/ShaderPass.js";
 import { HorizontalTiltShiftShader } from "three/examples/jsm/shaders/HorizontalTiltShiftShader.js";
 import { VerticalTiltShiftShader } from "three/examples/jsm/shaders/VerticalTiltShiftShader.js";
-import { createRealisticFir, createNightEnvironment } from "./scene/realisticFir.js";
+import { createRealisticFir, createCapLoopGeometry } from "./scene/realisticFir.js";
+import { createClearing } from "./scene/clearing.js";
+import { TIME_OF_DAY, WEATHER_PRESETS, createAtmosphereController } from "./scene/atmosphere.js";
 import { computeDeterministicGenomeHash } from "./lib/genome.js";
 import { inspectVoxelGeometrySafety } from "./lib/voxelSafety.js";
 import { inspectContentSafety, normalizeForModeration } from "./lib/moderation.js";
@@ -3534,6 +3536,275 @@ function WelcomeGuideModal({ isOpen, onClose, onStart, maxGifts = 3 }) {
 }
 
 // ============================================================================
+// 5.95. ИНТЕРФЕЙС НОВОГО ОБЛИКА: верхняя панель, меню-шторка, компактная карточка
+// ============================================================================
+const glassPanel =
+  "bg-[#070d1c]/80 backdrop-blur-xl border border-white/10 shadow-[0_10px_40px_rgba(0,0,0,0.45)]";
+
+function NewLookTopBar({ countdownText, isOfflineMode, onOpenRing, onOpenWorkshop, onOpenMenu }) {
+  return (
+    <div className="fixed top-3 left-3 right-3 z-30 flex items-start justify-between gap-2 pointer-events-none">
+      <button
+        type="button"
+        onClick={onOpenRing}
+        className={`${glassPanel} pointer-events-auto rounded-2xl px-3.5 py-2 text-left min-w-0`}
+      >
+        <div className="font-serif text-base sm:text-xl text-amber-50 leading-tight truncate">
+          Всемирная ёлка
+        </div>
+        <div className="text-[11px] text-slate-300 font-mono whitespace-nowrap">
+          {isOfflineMode ? "демо-режим · " : ""}
+          <span className="hidden sm:inline">до Кольца Чудес </span>⏳ {countdownText}
+        </div>
+      </button>
+      <div className="flex items-center gap-2 pointer-events-auto shrink-0">
+        <button
+          type="button"
+          onClick={onOpenWorkshop}
+          className="px-4 py-2.5 rounded-2xl bg-amber-300 hover:bg-amber-200 text-slate-950 font-semibold text-sm shadow-lg transition"
+        >
+          Создать шар
+        </button>
+        <button
+          type="button"
+          onClick={onOpenMenu}
+          aria-label="Открыть меню"
+          className={`${glassPanel} w-11 h-11 rounded-2xl flex flex-col items-center justify-center gap-[5px]`}
+        >
+          <span className="block w-5 h-[2px] bg-slate-100 rounded" />
+          <span className="block w-5 h-[2px] bg-slate-100 rounded" />
+          <span className="block w-3.5 h-[2px] bg-slate-100 rounded self-center" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function MenuSection({ title, children }) {
+  return (
+    <div className="space-y-2">
+      <div className="text-[11px] uppercase tracking-[0.14em] text-slate-400">{title}</div>
+      {children}
+    </div>
+  );
+}
+
+function NewLookMenu({
+  isOpen,
+  onClose,
+  timeOfDay,
+  onTimeOfDay,
+  weatherId,
+  onWeather,
+  onToTop,
+  onToGround,
+  isHearthOn,
+  onToggleHearth,
+  onOpenRing,
+  onOpenGuide,
+}) {
+  if (!isOpen) return null;
+  const chip = (active) =>
+    `px-3 py-2 rounded-xl border text-xs transition ${
+      active
+        ? "bg-amber-300 text-slate-950 border-amber-200 font-semibold"
+        : "bg-white/5 border-white/10 text-slate-200 hover:bg-white/10"
+    }`;
+  return (
+    <div className="fixed inset-0 z-50" role="dialog" aria-modal="true" aria-label="Меню">
+      <button type="button" aria-label="Закрыть меню" onClick={onClose} className="absolute inset-0 bg-black/40" />
+      <div
+        className={`${glassPanel} absolute right-0 top-0 bottom-0 w-[min(360px,92vw)] rounded-l-3xl p-5 overflow-y-auto space-y-6`}
+      >
+        <div className="flex items-center justify-between">
+          <div className="font-serif text-xl text-amber-50">Ёлка</div>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Закрыть"
+            className="w-9 h-9 rounded-xl bg-white/5 text-slate-300 hover:bg-white/10"
+          >
+            ✕
+          </button>
+        </div>
+
+        <MenuSection title="Время суток">
+          <div className="grid grid-cols-4 gap-1.5">
+            {Object.values(TIME_OF_DAY).map((t) => (
+              <button key={t.id} type="button" onClick={() => onTimeOfDay(t.id)} className={chip(timeOfDay === t.id)}>
+                <div className="text-base leading-none mb-1">{t.icon}</div>
+                {t.label}
+              </button>
+            ))}
+          </div>
+        </MenuSection>
+
+        <MenuSection title="Погода">
+          <div className="grid grid-cols-2 gap-1.5">
+            {WEATHER_PRESETS.map((w) => (
+              <button
+                key={w.id}
+                type="button"
+                onClick={() => onWeather(w.id)}
+                className={`${chip(weatherId === w.id)} text-left flex items-center gap-2`}
+              >
+                <span className="text-base">{w.icon}</span>
+                <span className="leading-tight">
+                  {w.title}
+                  <span className={`block text-[10px] ${weatherId === w.id ? "text-slate-800" : "text-slate-400"}`}>
+                    {w.temp}
+                  </span>
+                </span>
+              </button>
+            ))}
+          </div>
+        </MenuSection>
+
+        <MenuSection title="Прогулка">
+          <div className="grid grid-cols-2 gap-1.5">
+            <button type="button" onClick={onToTop} className={chip(false)}>
+              К звезде
+            </button>
+            <button type="button" onClick={onToGround} className={chip(false)}>
+              К поляне
+            </button>
+            <button type="button" onClick={onToggleHearth} className={chip(isHearthOn)}>
+              {isHearthOn ? "Камин звучит" : "Звук камина"}
+            </button>
+            <button type="button" onClick={onOpenRing} className={chip(false)}>
+              Кольцо Чудес
+            </button>
+          </div>
+        </MenuSection>
+
+        <MenuSection title="Справка">
+          <div className="grid grid-cols-2 gap-1.5">
+            <button type="button" onClick={onOpenGuide} className={chip(false)}>
+              Как это работает
+            </button>
+            <a href="/" className={`${chip(false)} text-center`}>
+              Прежний облик
+            </a>
+          </div>
+        </MenuSection>
+      </div>
+    </div>
+  );
+}
+
+function CompactGiftCard({
+  gift,
+  isPlaying,
+  isLooping,
+  playStep,
+  isOwn,
+  isLit,
+  isReported,
+  onPlay,
+  onToggleLoop,
+  onCandle,
+  onPrev,
+  onNext,
+  onClose,
+  onInspect,
+  onNft,
+  onReport,
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const iconBtn =
+    "w-9 h-9 shrink-0 rounded-xl bg-white/5 hover:bg-white/10 text-slate-200 flex items-center justify-center text-sm";
+  return (
+    <div className={`${glassPanel} fixed z-30 left-2.5 right-2.5 bottom-2.5 md:left-auto md:right-4 md:bottom-4 md:w-[400px] rounded-3xl p-3.5`}>
+      <div className="flex items-start gap-2">
+        <div className="min-w-0 flex-1">
+          <div className="font-serif text-lg text-amber-50 leading-tight truncate">
+            «{gift.card_preview.teaser_tag}»
+          </div>
+          <div className="text-[12px] text-slate-400 truncate">
+            {gift.card_preview.author_display_name} · {gift.card_preview.city} · 🕯 {gift.candles_count}
+          </div>
+        </div>
+        <button type="button" onClick={onPrev} aria-label="Предыдущий шар" className={iconBtn}>
+          ‹
+        </button>
+        <button type="button" onClick={onNext} aria-label="Следующий шар" className={iconBtn}>
+          ›
+        </button>
+        <button type="button" onClick={onClose} aria-label="Закрыть" className={iconBtn}>
+          ✕
+        </button>
+      </div>
+
+      {isPlaying && (
+        <div className="mt-2.5 flex gap-[3px]" aria-hidden="true">
+          {Array.from({ length: 16 }).map((_, i) => (
+            <span
+              key={i}
+              className={`h-1 flex-1 rounded-full ${playStep === i ? "bg-amber-300" : "bg-white/10"}`}
+            />
+          ))}
+        </div>
+      )}
+
+      <div className="mt-3 flex gap-2">
+        <button
+          type="button"
+          onClick={onPlay}
+          className="flex-1 py-2.5 rounded-xl bg-white/8 bg-white/5 hover:bg-white/10 border border-white/10 text-slate-100 text-sm"
+        >
+          {isPlaying ? "■ Стоп" : "▶ Мелодия"}
+        </button>
+        <button
+          type="button"
+          onClick={onCandle}
+          disabled={isOwn || isLit}
+          className="flex-1 py-2.5 rounded-xl bg-amber-300 hover:bg-amber-200 disabled:bg-amber-300/30 disabled:text-amber-100 text-slate-950 text-sm font-semibold"
+        >
+          {isOwn ? "Ваш шар" : isLit ? "Свеча горит" : "Зажечь свечу"}
+        </button>
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          aria-label="Ещё"
+          aria-expanded={expanded}
+          className={iconBtn + " h-auto w-11"}
+        >
+          ⋯
+        </button>
+      </div>
+
+      {expanded && (
+        <div className="mt-2.5 grid grid-cols-2 gap-1.5 text-xs">
+          <button type="button" onClick={onInspect} className="py-2 rounded-xl bg-white/5 hover:bg-white/10 text-slate-200">
+            Рассмотреть шар
+          </button>
+          <button type="button" onClick={onNft} className="py-2 rounded-xl bg-white/5 hover:bg-white/10 text-slate-200">
+            Паспорт и 3D-капсула
+          </button>
+          <button
+            type="button"
+            onClick={onToggleLoop}
+            className={`py-2 rounded-xl ${isLooping ? "bg-amber-300/20 text-amber-200" : "bg-white/5 text-slate-200"} hover:bg-white/10`}
+          >
+            Повтор мелодии: {isLooping ? "вкл" : "выкл"}
+          </button>
+          {!gift.offline && (
+            <button
+              type="button"
+              onClick={onReport}
+              disabled={isReported}
+              className="py-2 rounded-xl bg-white/5 hover:bg-white/10 text-slate-400 disabled:opacity-50"
+            >
+              {isReported ? "Жалоба отправлена" : "Пожаловаться"}
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
 // 6. MAIN 3D WORLD TREE SCENE (CRYSTAL ORBS + TRUE 3D SNOW & CHRISTMAS SANCTUARY)
 // ============================================================================
 export default function App() {
@@ -3565,9 +3836,17 @@ export default function App() {
   const [isForegroundSnowOn, setIsForegroundSnowOn] = useState(!LOOK_NEW);
   const [isHearthSoundOn, setIsHearthSoundOn] = useState(false);
   const [isWeatherDrawerOpen, setIsWeatherDrawerOpen] = useState(false);
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isMobileCardExpanded, setIsMobileCardExpanded] = useState(false);
 
   const weatherPresetRef = useRef(CHRISTMAS_ATMOSPHERE_PRESETS[0]);
+  // Новый облик: время суток и погода
+  const [timeOfDay, setTimeOfDay] = useState("night");
+  const [newWeatherId, setNewWeatherId] = useState("clear_night");
+  const atmosphereRef = useRef(null);
+  const timeOfDayRef = useRef("night");
+  const newWeatherRef = useRef(WEATHER_PRESETS[0]);
+  const cameraFocusRef = useRef(null);
   const snowDensityRef = useRef(LOOK_NEW ? 0.35 : 0.7);
 
   const [selectedGift, setSelectedGift] = useState(null);
@@ -3640,8 +3919,31 @@ export default function App() {
   );
 
   useEffect(() => {
+    if (LOOK_NEW) return;
     weatherPresetRef.current = activeWeatherPreset;
   }, [activeWeatherPreset]);
+
+  // Новый облик: погода задаёт снег/ветер и время суток; время можно менять отдельно
+  useEffect(() => {
+    if (!LOOK_NEW) return;
+    const w = WEATHER_PRESETS.find((p) => p.id === newWeatherId) || WEATHER_PRESETS[0];
+    newWeatherRef.current = w;
+    weatherPresetRef.current = {
+      ...CHRISTMAS_ATMOSPHERE_PRESETS[0],
+      windSpeed: w.windSpeed,
+      fallSpeed: w.fallSpeed,
+      diamondSparkle: w.diamondSparkle,
+    };
+    snowDensityRef.current = w.snow;
+    setSnowDensityMultiplier(w.snow);
+    atmosphereRef.current?.set(timeOfDayRef.current, w);
+  }, [newWeatherId]);
+
+  useEffect(() => {
+    if (!LOOK_NEW) return;
+    timeOfDayRef.current = timeOfDay;
+    atmosphereRef.current?.set(timeOfDay, newWeatherRef.current);
+  }, [timeOfDay]);
 
   useEffect(() => {
     snowDensityRef.current = snowDensityMultiplier;
@@ -3650,6 +3952,35 @@ export default function App() {
   useEffect(() => {
     selectedGiftRef.current = selectedGift;
   }, [selectedGift]);
+
+  // Новый облик: камера облетает Ёлку к выбранному шару и чуть приближается.
+  // Первый автоматический выбор при загрузке пропускаем — сцена открывается общим планом.
+  const skipFirstFocusRef = useRef(true);
+  const focusKey = selectedGift
+    ? `${selectedGift.id}:${selectedGift.coordinates?.sequence_number}`
+    : "";
+  useEffect(() => {
+    if (!LOOK_NEW) return;
+    if (!selectedGift) {
+      cameraFocusRef.current = null;
+      zoomTargetRef.current = 1;
+      return;
+    }
+    if (skipFirstFocusRef.current) {
+      skipFirstFocusRef.current = false;
+      return;
+    }
+    const { branch_angle_rad, radius_offset, y_height } = selectedGift.coordinates;
+    cameraFocusRef.current = {
+      angle: branch_angle_rad,
+      x: Math.cos(branch_angle_rad) * radius_offset,
+      y: 60.0 - y_height + 0.2,
+      z: Math.sin(branch_angle_rad) * radius_offset,
+    };
+    scrollTargetRef.current = Math.min(MAX_SCROLL_DEPTH, Math.max(0, y_height - 0.5));
+    zoomTargetRef.current = 0.6;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusKey]);
 
   useEffect(() => {
     return musicBoxSynth.subscribe((st) => {
@@ -3905,7 +4236,7 @@ export default function App() {
         hasCandle: cCount > 0,
       });
 
-      hangers.push({ x: worldX, z: worldZ, topY: worldY + 0.98 * ORB });
+      hangers.push({ x: worldX, z: worldZ, topY: worldY + (LOOK_NEW ? 1.03 : 0.98) * ORB });
 
       orbHaloMeta.push({
         worldX,
@@ -4052,6 +4383,11 @@ export default function App() {
   useEffect(() => {
     const ring = selectionRingRef.current;
     if (!ring) return;
+    if (LOOK_NEW) {
+      // в новом облике выбранный шар выделяет камера (центрирует и приближает)
+      ring.visible = false;
+      return;
+    }
     if (!selectedGift) {
       ring.visible = false;
       return;
@@ -5078,6 +5414,7 @@ export default function App() {
     let prevPointerX = 0;
     let manualAzimuthOffset = 0;
     let zoomLevel = zoomTargetRef.current;
+    const lookTarget = new THREE.Vector3(0, 60 - 9.5 - 1.1, 0);
     const clock = new THREE.Clock();
 
     spawnOwlRef.current = (payload) => {
@@ -5142,7 +5479,9 @@ export default function App() {
     // НОВЫЙ ОБЛИК (?look=new): реалистичная ель, HDR-свет, туман, DOF
     // ======================================================================
     let fir = null;
-    let envRT = null;
+    let clearing = null;
+    let atmosphere = null;
+    let lastElapsed = 0;
     let tiltPasses = [];
     // Адаптивное качество: замеряем FPS после прогрева и упрощаем сцену на слабых устройствах
     const perf = { frames: 0, start: 0, level: 0, done: false };
@@ -5175,24 +5514,38 @@ export default function App() {
       firApiRef.current = fir;
       fir.setGiftHangers(lastHangersRef.current);
 
-      // освещение от процедурной HDR-панорамы ночного неба
-      envRT = createNightEnvironment(renderer);
-      scene.environment = envRT.texture;
-      scene.environmentIntensity = 1.15;
+      // Поляна: равнина, лес из настоящих елей, викторианские фонари, сугробы
+      clearingGroup.visible = false;
+      clearing = createClearing({ foliage: fir.foliage, isMobile: isMobileGpu });
+      scene.add(clearing.group);
 
-      // холодная луна + слабое небо; тёплый свет дают гирлянда и фонари
-      hemiLight.color.set("#6f86c4");
-      hemiLight.groundColor.set("#141a2c");
-      hemiLight.intensity = 0.35;
-      dirLight.color.set("#c4d4ff");
-      dirLight.intensity = 1.35;
-      dirLight.position.set(-40, 80, -30);
+      // Шары — как настоящие ёлочные игрушки: без пьедестала и «пики»-свечи,
+      // с классическим колпачком и петелькой, за которую они подвешены на нити
+      pedestalInstanced.visible = false;
+      rimInstanced.visible = false;
+      flameInstanced.visible = false;
+      crownCapInstanced.geometry.dispose();
+      crownCapInstanced.geometry = createCapLoopGeometry();
+
+      scene.fog = new THREE.FogExp2("#0d1830", 0.0085);
       starPointLight.intensity = 5;
+      bloomPass.radius = 0.55;
+      bloomPass.threshold = 0.82;
 
-      // глубокое ночное небо без фиолетовой «авроры» и мягкий туман
-      auroraUniforms.uTopColor.value.set("#040915");
-      auroraUniforms.uBottomColor.value.set("#17233f");
-      auroraUniforms.uAuroraStrength.value = 0.0;
+      // Время суток, погода, HDR-освещение, звёзды, луна/солнце — с плавными переходами
+      atmosphere = createAtmosphereController({
+        scene,
+        renderer,
+        camera,
+        hemiLight,
+        dirLight,
+        auroraUniforms,
+        bloomPass,
+        fir,
+        lanterns: clearing.lanterns,
+      });
+      atmosphereRef.current = atmosphere;
+      atmosphere.set(timeOfDayRef.current, newWeatherRef.current);
 
       // Настоящая пятиконечная звезда вместо двух жёлтых ромбов
       starCoreA.visible = false;
@@ -5223,14 +5576,6 @@ export default function App() {
         })
       );
       topStarGroup.add(newStar);
-      scene.background.set("#040915");
-      scene.fog = new THREE.FogExp2("#0d1830", 0.0085);
-
-      renderer.toneMappingExposure = 1.05;
-      // свечение — только у по-настоящему ярких источников (гирлянда, звезда)
-      bloomPass.strength = 0.55;
-      bloomPass.radius = 0.55;
-      bloomPass.threshold = 0.82;
 
       // киношная глубина резкости: ель в фокусе, верх и низ кадра мягко размыты
       const hBlur = new ShaderPass(HorizontalTiltShiftShader);
@@ -5248,7 +5593,7 @@ export default function App() {
         snowPointsMat.size *= 0.45;
         snowPointsMat.opacity = Math.min(snowPointsMat.opacity ?? 1, 0.6);
       }
-      console.info("[WorldFir] Новый облик:", fir.stats);
+      console.info("[WorldFir] Новый облик:", fir.stats, clearing.stats);
     }
 
     const clampZoom = (z) => Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, z));
@@ -5260,6 +5605,7 @@ export default function App() {
 
     const onWheel = (e) => {
       e.preventDefault();
+      if (!e.ctrlKey) cameraFocusRef.current = null;
       // Ctrl+колесо — это и «щипок» на тачпаде ноутбука: приближение/отдаление.
       if (e.ctrlKey) {
         zoomTargetRef.current = clampZoom(zoomTargetRef.current * Math.exp(e.deltaY * 0.01));
@@ -5271,6 +5617,7 @@ export default function App() {
       );
     };
     const onMouseDown = (e) => {
+      cameraFocusRef.current = null;
       isDragging = true;
       dragDistance = 0;
       prevPointerY = e.clientY;
@@ -5296,6 +5643,7 @@ export default function App() {
     // Полноценная поддержка сенсорного экрана (Touch-свайпы пальцем для вращения и полёта вдоль Ели)
     const onTouchStart = (e) => {
       if (!e.touches || e.touches.length === 0) return;
+      cameraFocusRef.current = null;
       if (e.touches.length >= 2) {
         // Второй палец — переходим в режим щипка, вращение не трогаем.
         isPinching = true;
@@ -5417,6 +5765,8 @@ export default function App() {
       auroraUniforms.uTime.value = elapsed;
       if (fir) {
         fir.update(elapsed);
+        atmosphere?.update(Math.min(0.1, elapsed - lastElapsed), elapsed);
+        lastElapsed = elapsed;
         if (!perf.done) {
           if (elapsed > 2.5) {
             if (!perf.start) perf.start = performance.now();
@@ -5459,6 +5809,13 @@ export default function App() {
       }
 
       scrollDepth += (scrollTargetRef.current - scrollDepth) * 0.08;
+      const focus = cameraFocusRef.current;
+      if (focus) {
+        // плавно доворачиваем камеру так, чтобы шар оказался прямо перед ней
+        let diff = focus.angle - scrollDepth * 0.18 - manualAzimuthOffset;
+        diff = Math.atan2(Math.sin(diff), Math.cos(diff));
+        manualAzimuthOffset += diff * 0.06;
+      }
       const spiralAngle = scrollDepth * 0.18 + manualAzimuthOffset;
       zoomLevel += (zoomTargetRef.current - zoomLevel) * 0.12;
       const baseConeRadius = getConeEnvelopeRadius(scrollDepth) * 1.3 + 27.0;
@@ -5474,7 +5831,10 @@ export default function App() {
         Math.max(camY + 1.9, MIN_CAMERA_Y),
         Math.sin(spiralAngle) * currentConeRadius
       );
-      camera.lookAt(0, camY - 1.1, 0);
+      // точка взгляда: ось Ёлки, а при выбранном шаре — смещается к нему
+      if (focus) lookTarget.lerp(new THREE.Vector3(focus.x, focus.y, focus.z), 0.08);
+      else lookTarget.lerp(new THREE.Vector3(0, camY - 1.1, 0), 0.08);
+      camera.lookAt(lookTarget);
       skyDome.position.y = camY;
       topStarGroup.rotation.y = elapsed * 0.85;
 
@@ -5643,7 +6003,11 @@ export default function App() {
         fir.dispose();
         firApiRef.current = null;
       }
-      if (envRT) envRT.dispose();
+      if (clearing) clearing.dispose();
+      if (atmosphere) {
+        atmosphere.dispose();
+        atmosphereRef.current = null;
+      }
       window.removeEventListener("mousemove", onMouseMove);
       window.removeEventListener("mouseup", onMouseUp);
       window.removeEventListener("touchend", onTouchEnd);
@@ -5933,16 +6297,62 @@ export default function App() {
       />
 
       {/* Морозная рождественская изморозь по краям экрана */}
-      <div
+      {!LOOK_NEW && <div
         className="fixed inset-0 pointer-events-none z-10 transition-opacity duration-700"
         style={{
           opacity: activeWeatherPreset.frostVignette,
           background:
             "radial-gradient(circle at 50% 50%, transparent 58%, rgba(186, 230, 253, 0.22) 88%, rgba(224, 242, 254, 0.45) 100%)",
         }}
-      />
+      />}
 
       {/* ЕДИНАЯ ВЕРХНЯЯ ПАНЕЛЬ БЕЗ НАЛОЖЕНИЙ (Mobile-First + Desktop) */}
+      {LOOK_NEW && (
+        <NewLookTopBar
+          countdownText={countdownText}
+          isOfflineMode={isOfflineMode}
+          onOpenRing={() => setIsRingModalOpen(true)}
+          onOpenWorkshop={() => setIsWorkshopOpen(true)}
+          onOpenMenu={() => setIsMenuOpen(true)}
+        />
+      )}
+      <NewLookMenu
+        isOpen={LOOK_NEW && isMenuOpen}
+        onClose={() => setIsMenuOpen(false)}
+        timeOfDay={timeOfDay}
+        onTimeOfDay={setTimeOfDay}
+        weatherId={newWeatherId}
+        onWeather={(id) => {
+          setNewWeatherId(id);
+          const w = WEATHER_PRESETS.find((p) => p.id === id);
+          if (w) setTimeOfDay(w.time);
+        }}
+        onToTop={() => {
+          cameraFocusRef.current = null;
+          scrollTargetRef.current = 2.0;
+          setIsMenuOpen(false);
+        }}
+        onToGround={() => {
+          cameraFocusRef.current = null;
+          scrollTargetRef.current = 56.0;
+          setIsMenuOpen(false);
+        }}
+        isHearthOn={isHearthSoundOn}
+        onToggleHearth={() => {
+          const next = !isHearthSoundOn;
+          setIsHearthSoundOn(next);
+          musicBoxSynth.toggleCozyHearthAmbient(next);
+        }}
+        onOpenRing={() => {
+          setIsMenuOpen(false);
+          setIsRingModalOpen(true);
+        }}
+        onOpenGuide={() => {
+          setIsMenuOpen(false);
+          setIsWelcomeOpen(true);
+        }}
+      />
+      {!LOOK_NEW && (
       <div className="fixed top-2.5 left-2.5 right-2.5 z-30 flex flex-col gap-2 pointer-events-none">
         {/* Главная компактная строка управления */}
         <div className="flex items-center justify-between gap-2">
@@ -6156,6 +6566,7 @@ export default function App() {
           </div>
         )}
       </div>
+      )}
 
       {owlBanner && (
         <div className="fixed top-24 left-1/2 -translate-x-1/2 z-40 pointer-events-none animate-bounce">
@@ -6173,7 +6584,42 @@ export default function App() {
         </div>
       )}
 
-      {selectedGift && (
+      {selectedGift && LOOK_NEW && (
+        <CompactGiftCard
+          key={selectedGift.id}
+          gift={selectedGift}
+          isPlaying={isSelectedGiftPlaying}
+          isLooping={audioPlaybackState.isLooping}
+          playStep={audioPlaybackState.step}
+          isOwn={myGiftIds.has(selectedGift.id)}
+          isLit={litGiftIds.has(selectedGift.id)}
+          isReported={reportedGiftIds.has(selectedGift.id)}
+          onPlay={() =>
+            musicBoxSynth.toggleMelody(
+              selectedGift.id,
+              selectedGift.melody.tempo_bpm,
+              selectedGift.melody.celesta_track,
+              selectedGift.melody.harp_track,
+              selectedGift.melody.cello_track,
+              selectedGift.melody.flute_track,
+              selectedGift.melody.drum_track
+            )
+          }
+          onToggleLoop={() => musicBoxSynth.setLooping(!audioPlaybackState.isLooping)}
+          onCandle={handleLightCandle}
+          onPrev={() => handleStepNeighborGift(-1)}
+          onNext={() => handleStepNeighborGift(1)}
+          onClose={() => {
+            musicBoxSynth.stop();
+            setSelectedGift(null);
+          }}
+          onInspect={() => setIsInspectModalOpen(true)}
+          onNft={() => setNftModalState({ isOpen: true, gift: selectedGift, recipientCity: null })}
+          onReport={handleReportGift}
+        />
+      )}
+
+      {selectedGift && !LOOK_NEW && (
         <div className="fixed bottom-2.5 right-2.5 left-2.5 md:left-auto md:w-[450px] max-h-[75vh] overflow-y-auto bg-[#0b1528]/92 backdrop-blur-xl border border-amber-400/45 rounded-2xl sm:rounded-3xl p-3 sm:p-4 shadow-2xl z-30">
           <div className="flex justify-between items-center gap-2">
             <div className="min-w-0 flex-1">

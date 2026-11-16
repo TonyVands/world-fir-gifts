@@ -10,13 +10,15 @@ import * as THREE from "three";
 
 const TREE_TOP_Y = 59.0;
 const GROUND_Y = -4.0;
+// Верх снежного поля (цилиндр поляны: центр -4, высота 2.6)
+export const SNOW_Y = -2.7;
 
 export function envelopeRadius(yH) {
   const y = Math.max(0, yH);
   return 1.85 + y * 0.24 + 0.35 * Math.sqrt(y);
 }
 
-function mulberry32(seed) {
+export function mulberry32(seed) {
   let a = seed >>> 0;
   return () => {
     a = (a + 0x6d2b79f5) >>> 0;
@@ -188,7 +190,7 @@ function bezier(p0, p1, p2, t, out) {
  * Раскладывает «лапы» вдоль одной ветки.
  * push(position, direction, scale, brightness, isTip)
  */
-function layBranch({ base, tip, rnd, density, push, sOffset = 0.18 }) {
+export function layBranch({ base, tip, rnd, density, push, sOffset = 0.18, sizeMul = 1 }) {
   const len = base.distanceTo(tip);
   const mid = new THREE.Vector3().lerpVectors(base, tip, 0.5);
   mid.y += len * 0.03; // ветка почти горизонтальна у ствола и плавно опускается
@@ -197,18 +199,24 @@ function layBranch({ base, tip, rnd, density, push, sOffset = 0.18 }) {
   const dir = new THREE.Vector3();
   const side = new THREE.Vector3();
   const up = new THREE.Vector3(0, 1, 0);
-  const step = 0.95 / density;
+  const step = (0.95 / density) * sizeMul;
   const n = Math.max(2, Math.ceil(len / step));
   for (let i = 0; i <= n; i++) {
     const s = sOffset + (1 - sOffset) * (i / n);
     bezier(base, mid, tip, s, p);
-    bezier(base, mid, tip, Math.min(1, s + 0.02), q);
-    dir.subVectors(q, p).normalize();
+    // касательная по отрезку [t0, t0+0.02] внутри кривой: на самом кончике (s=1)
+    // прямая разность давала нулевой вектор → лапа вставала вертикально
+    const t0 = Math.min(s, 0.98);
+    bezier(base, mid, tip, t0, dir);
+    bezier(base, mid, tip, t0 + 0.02, q);
+    dir.subVectors(q, dir).normalize();
     // кончик лапы чуть задран вверх — характерный силуэт ели
     if (s > 0.85) dir.y += (s - 0.85) * 0.6;
+    // Лапы никогда не «растут» вверх: у ели они горизонтальны или поникают
+    dir.y = Math.min(dir.y, 0.12);
     dir.normalize();
     const bright = 0.28 + 0.72 * Math.pow(s, 0.85);
-    const sc = (0.9 + s * 1.25) * (0.85 + rnd() * 0.3);
+    const sc = (0.9 + s * 1.25) * (0.85 + rnd() * 0.3) * sizeMul;
     push(p, dir, sc, bright, s > 0.9);
     // боковые веточки второго порядка
     side.crossVectors(dir, up).normalize();
@@ -225,7 +233,7 @@ function layBranch({ base, tip, rnd, density, push, sOffset = 0.18 }) {
   }
 }
 
-function mergeCards(a, b) {
+export function mergeCards(a, b) {
   const g = new THREE.BufferGeometry();
   for (const name of ["position", "normal", "uv"]) {
     const A = a.getAttribute(name);
@@ -295,7 +303,7 @@ export function createRealisticFir({ isMobile = false } = {}) {
   const tipPoints = [];
 
   const pushSpray = (pos, dir, scale, bright, isTip, yH) => {
-    sprays.push({ pos: pos.clone(), dir: dir.clone(), scale, bright, yH, roll: (rnd() - 0.5) * 1.3 });
+    sprays.push({ pos: pos.clone(), dir: dir.clone(), scale, bright, yH, roll: (rnd() - 0.5) * 0.55 });
     // снег ложится на верхние, наружные лапы
     if (bright > 0.7 && dir.y < 0.3 && rnd() < 0.16) {
       snows.push({ pos: pos.clone().add(new THREE.Vector3(0, 0.06, 0)), dir: dir.clone(), scale: scale * 0.82 });
@@ -306,40 +314,54 @@ export function createRealisticFir({ isMobile = false } = {}) {
   // --- мутовки ---
   const whorlStep = isMobile ? 1.75 : 1.45;
   let whorlIdx = 0;
-  for (let y = TREE_TOP_Y - 1.2; y > GROUND_Y + 2.2; y -= whorlStep * (0.85 + rnd() * 0.3)) {
+  const addWhorl = (y, { extraDroop = 0, lenMul = 1, countMul = 1 } = {}) => {
     const yH = 60 - y;
-    const R = envelopeRadius(yH) + 1.25;
-    const count = Math.round((5 + Math.min(7, yH / 8)) * (isMobile ? 0.85 : 1));
+    const R = (envelopeRadius(yH) + 1.25) * lenMul;
+    // число веток растёт с окружностью кроны — внизу нет «проплешин»
+    // у верхушки ветки короткие — делаем мутовки гуще, чтобы не просвечивал ствол
+    const topBoost = yH < 18 ? 1.6 : yH < 30 ? 1.25 : 1;
+    const count = Math.max(5, Math.round((4 + R * 0.62) * countMul * topBoost * (isMobile ? 0.8 : 1)));
+    // нижние лапы крупнее: та же густота меньшим числом карточек
+    const sizeMul = 1 + Math.min(0.55, yH / 110);
     const offset = whorlIdx * 2.39996; // золотой угол между мутовками
     for (let i = 0; i < count; i++) {
       const a = offset + (i / count) * Math.PI * 2 + (rnd() - 0.5) * 0.35;
       const L = R * (0.88 + rnd() * 0.16);
-      const droop = L * (0.1 + 0.26 * Math.min(1, yH / 60)) + rnd() * 0.4;
+      const droop = L * (0.1 + 0.26 * Math.min(1, yH / 60)) + rnd() * 0.4 + extraDroop;
       const base = new THREE.Vector3(Math.cos(a) * 0.4, y, Math.sin(a) * 0.4);
-      const tip = new THREE.Vector3(Math.cos(a) * L, y - droop, Math.sin(a) * L);
+      const tip = new THREE.Vector3(Math.cos(a) * L, Math.max(SNOW_Y + 0.25, y - droop), Math.sin(a) * L);
       layBranch({
         base,
         tip,
         rnd,
         density,
+        sizeMul,
         push: (p, d, s, b, isTip) => pushSpray(p, d, s, b, isTip, yH),
       });
       twigs.push({ base, tip, thick: 0.05 + Math.min(0.2, yH / 300) });
       // промежуточная короткая ветка — заполняет «просветы» между мутовками
-      if (!isMobile || i % 2 === 0) {
+      if ((!isMobile && (yH < 30 || i % 2 === 0)) || (isMobile && i % 2 === 0)) {
         const a2 = a + Math.PI / count;
         const y2 = y - whorlStep * 0.5;
-        const L2 = L * (0.55 + rnd() * 0.2);
+        const L2 = L * (0.55 + rnd() * 0.25);
         layBranch({
           base: new THREE.Vector3(Math.cos(a2) * 0.4, y2, Math.sin(a2) * 0.4),
-          tip: new THREE.Vector3(Math.cos(a2) * L2, y2 - droop * 0.5, Math.sin(a2) * L2),
+          tip: new THREE.Vector3(Math.cos(a2) * L2, Math.max(SNOW_Y + 0.25, y2 - droop * 0.5), Math.sin(a2) * L2),
           rnd,
           density: density * 0.8,
+          sizeMul,
           push: (p, d, s, b) => pushSpray(p, d, s, b * 0.9, false, yH),
         });
       }
     }
     whorlIdx++;
+  };
+  for (let y = TREE_TOP_Y - 1.2; y > SNOW_Y + 3.2; y -= whorlStep * (0.85 + rnd() * 0.3)) {
+    addWhorl(y);
+  }
+  // «Юбка»: густые поникшие лапы у самого снега закрывают ствол и низ кроны
+  for (const y of [SNOW_Y + 2.7, SNOW_Y + 1.8, SNOW_Y + 1.0]) {
+    addWhorl(y, { extraDroop: 0.8, lenMul: 1.04, countMul: 1.15 });
   }
   // верхушка-«лидер»
   for (let i = 0; i < 6; i++) {
@@ -418,7 +440,7 @@ export function createRealisticFir({ isMobile = false } = {}) {
   const coreGeo = new THREE.ConeGeometry(envelopeRadius(64) * 0.62, TREE_TOP_Y - GROUND_Y - 2, 24, 1, true);
   const core = new THREE.Mesh(
     coreGeo,
-    new THREE.MeshStandardMaterial({ color: "#07150d", roughness: 1, side: THREE.DoubleSide })
+    new THREE.MeshStandardMaterial({ color: "#12301c", roughness: 1, side: THREE.DoubleSide })
   );
   core.position.y = (TREE_TOP_Y + GROUND_Y) / 2 - 1;
   group.add(core);
@@ -459,16 +481,18 @@ export function createRealisticFir({ isMobile = false } = {}) {
   }
   bulbGeo.setAttribute("aPhase", new THREE.InstancedBufferAttribute(phases, 1));
   bulbGeo.setAttribute("aColor", new THREE.InstancedBufferAttribute(bulbColors, 3));
+  const glowUniform = { value: 1 };
   const bulbMat = new THREE.ShaderMaterial({
-    uniforms: { uTime: uniforms.uTime },
+    uniforms: { uTime: uniforms.uTime, uGlow: glowUniform },
     vertexShader: `
       attribute float aPhase;
       attribute vec3 aColor;
       uniform float uTime;
+      uniform float uGlow;
       varying vec3 vColor;
       void main() {
         float tw = 0.72 + 0.28 * sin(uTime * 1.6 + aPhase) * sin(uTime * 0.7 + aPhase * 2.0);
-        vColor = aColor * tw * 2.6;
+        vColor = aColor * tw * mix(0.9, 2.6, uGlow);
         gl_Position = projectionMatrix * modelViewMatrix * instanceMatrix * vec4(position, 1.0);
       }`,
     fragmentShader: `
@@ -581,10 +605,15 @@ export function createRealisticFir({ isMobile = false } = {}) {
       sprayMesh.count = Math.floor(sprays.length * k);
       snowMesh.count = Math.floor(snows.length * k);
     },
+    foliage: { sprayMat, snowMat, cardGeo, snowCardGeo, foliageTint },
+    setGarlandGlow(k) {
+      glowUniform.value = k;
+    },
     update(elapsed) {
       uniforms.uTime.value = elapsed;
+      const g = glowUniform.value;
       for (let i = 0; i < garlandLights.length; i++) {
-        garlandLights[i].intensity = 22 + Math.sin(elapsed * 1.3 + i * 1.7) * 4;
+        garlandLights[i].intensity = (22 + Math.sin(elapsed * 1.3 + i * 1.7) * 4) * g;
       }
     },
     dispose() {
@@ -658,4 +687,16 @@ export function createNightEnvironment(renderer) {
     o.material?.dispose?.();
   });
   return rt;
+}
+
+// Классический колпачок ёлочного шара с петелькой (для подарочных шаров).
+// Начало координат — верх стеклянной сферы; петелька наверху.
+export function createCapLoopGeometry() {
+  const cap = new THREE.CylinderGeometry(0.15, 0.17, 0.16, 18, 1);
+  cap.translate(0, 0.05, 0);
+  const rim = new THREE.CylinderGeometry(0.18, 0.18, 0.035, 18, 1);
+  rim.translate(0, -0.02, 0);
+  const loop = new THREE.TorusGeometry(0.075, 0.017, 8, 20);
+  loop.translate(0, 0.205, 0);
+  return mergeCards(mergeCards(cap, rim), loop);
 }
