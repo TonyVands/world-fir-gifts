@@ -522,6 +522,62 @@ export function createRealisticFir({ isMobile = false } = {}) {
   bulbs.frustumCulled = false;
   group.add(bulbs);
 
+  // --- вторая гирлянда: разноцветные «ретро»-лампочки, бегущие огни ---
+  // Идёт встречной спиралью, лампы крупнее и вытянутые, как у советских гирлянд.
+  const retroCount = isMobile ? 160 : 260;
+  const retroGeo = new THREE.SphereGeometry(0.19, 10, 8);
+  retroGeo.scale(1, 1.45, 1);
+  const retroIdx = new Float32Array(retroCount);
+  const retroColors = new Float32Array(retroCount * 3);
+  const retroPalette = ["#ff3b3b", "#2fe36b", "#3d8bff", "#ffc23a", "#ff4fd8"].map((h) => new THREE.Color(h));
+  for (let i = 0; i < retroCount; i++) {
+    retroIdx[i] = i;
+    const c = retroPalette[i % retroPalette.length];
+    retroColors.set([c.r, c.g, c.b], i * 3);
+  }
+  retroGeo.setAttribute("aIndex", new THREE.InstancedBufferAttribute(retroIdx, 1));
+  retroGeo.setAttribute("aColor", new THREE.InstancedBufferAttribute(retroColors, 3));
+  const retroMat = new THREE.ShaderMaterial({
+    uniforms: { uTime: uniforms.uTime, uGlow: glowUniform },
+    vertexShader: `
+      attribute float aIndex;
+      attribute vec3 aColor;
+      uniform float uTime;
+      uniform float uGlow;
+      varying vec3 vColor;
+      void main() {
+        // «бегущий огонь»: волна яркости пробегает по гирлянде сверху вниз
+        float chase = 0.35 + 0.65 * pow(0.5 + 0.5 * sin(uTime * 2.4 - aIndex * 0.55), 3.0);
+        vColor = aColor * chase * mix(0.8, 2.4, uGlow);
+        gl_Position = projectionMatrix * modelViewMatrix * instanceMatrix * vec4(position, 1.0);
+      }`,
+    fragmentShader: `
+      varying vec3 vColor;
+      void main() {
+        gl_FragColor = vec4(vColor, 1.0);
+        #include <colorspace_fragment>
+      }`,
+  });
+  const retro = new THREE.InstancedMesh(retroGeo, retroMat, retroCount);
+  const retroTurns = 5.5;
+  const hang = new THREE.Vector3(0, -1, 0);
+  for (let i = 0; i < retroCount; i++) {
+    const t = i / retroCount;
+    const y = TREE_TOP_Y - 5 - t * (TREE_TOP_Y - GROUND_Y - 9);
+    const yH = 60 - y;
+    const a = -t * retroTurns * Math.PI * 2 + 1.3; // встречная спираль
+    const r = envelopeRadius(yH) + 1.55;
+    const sag = Math.abs(Math.sin(t * retroTurns * 5 * Math.PI)) * 0.55;
+    tmp.position.set(Math.cos(a) * r, y - sag, Math.sin(a) * r);
+    tmp.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), hang.set((rnd() - 0.5) * 0.3, 1, (rnd() - 0.5) * 0.3).normalize());
+    tmp.scale.setScalar(1);
+    tmp.updateMatrix();
+    retro.setMatrixAt(i, tmp.matrix);
+  }
+  retro.instanceMatrix.needsUpdate = true;
+  retro.frustumCulled = false;
+  group.add(retro);
+
   // Несколько тёплых источников света вдоль гирлянды — хвоя рядом подсвечивается
   const garlandLights = [];
   const lightCount = isMobile ? 3 : 5;
@@ -610,6 +666,11 @@ export function createRealisticFir({ isMobile = false } = {}) {
       snowMesh.count = Math.floor(snows.length * k);
     },
     foliage: { sprayMat, snowMat, cardGeo, snowCardGeo, foliageTint },
+    /** "warm" | "retro" | "both" — какие гирлянды горят. */
+    setGarlandMode(mode) {
+      bulbs.visible = mode !== "retro";
+      retro.visible = mode !== "warm";
+    },
     setGarlandGlow(k) {
       glowUniform.value = k;
     },

@@ -19,6 +19,8 @@ import {
   fetchCandleLeaders as apiFetchCandleLeaders,
   fetchCandleStatus as apiFetchCandleStatus,
   fetchGifts as apiFetchGifts,
+  fetchMyGift as apiFetchMyGift,
+  updateGift as apiUpdateGift,
   fetchMyProfile as apiFetchMyProfile,
   fetchMyRing as apiFetchMyRing,
   fetchRingStatus as apiFetchRingStatus,
@@ -885,6 +887,13 @@ export function computeAntiSybilScoreDetails({
 // (канонический sha256-хэш общим модулем: src/lib/genome.js — паритет с бэкендом)
 // ============================================================================
 
+// Ссылка «открыть этот шар на Ёлке»: /?gift=<id>
+function giftShareUrl(gift) {
+  const origin =
+    typeof window !== "undefined" && window.location?.origin ? window.location.origin : "https://world-fir-timyrabdrakhimov.waw0.amvera.tech";
+  return gift?.id && !gift.offline ? `${origin}/?gift=${encodeURIComponent(gift.id)}` : origin;
+}
+
 function buildNftRelicMetadata(gift, recipientCity = null) {
   const genomeHash = gift?.genome_hash || computeDeterministicGenomeHash(gift);
   const seq = gift?.coordinates?.sequence_number ?? 0;
@@ -904,16 +913,14 @@ function buildNftRelicMetadata(gift, recipientCity = null) {
   });
 
   const activeInstruments = [];
-  if ((gift?.melody?.celesta_track || []).some((n) => n > 0))
-    activeInstruments.push("Челеста");
-  if ((gift?.melody?.harp_track || []).some((n) => n > 0))
-    activeInstruments.push("Концертная Арфа");
-  if ((gift?.melody?.cello_track || []).some((n) => n > 0))
-    activeInstruments.push("Виолончель");
-  if ((gift?.melody?.flute_track || []).some((n) => n > 0))
-    activeInstruments.push("Северная Флейта");
+  const voicesMap = gift?.melody?.voices || {};
+  for (const slot of ["celesta", "harp", "cello", "flute"]) {
+    if ((gift?.melody?.[`${slot}_track`] || []).some((n) => n > 0)) {
+      activeInstruments.push(VOICE_BY_ID[voicesMap[slot] || slot]?.name || slot);
+    }
+  }
   if ((gift?.melody?.drum_track || []).some((n) => n > 0))
-    activeInstruments.push("Барабаны и бубенцы");
+    activeInstruments.push("Бубенцы и ритм");
 
   const baseMatObj =
     BASE_MATERIALS.find((b) => b.id === gift?.snowglobe?.base_material) ||
@@ -926,7 +933,9 @@ function buildNftRelicMetadata(gift, recipientCity = null) {
     .toUpperCase()}`;
 
   return {
-    standard: "ERC-721 / TON TEP-62 Soulbound Relic (World Fir Gifts 1/1)",
+    // Это не токен в блокчейне, а «паспорт» шара: метаданные в формате,
+    // совместимом с ERC-721 metadata JSON, — их можно выпустить как NFT позже.
+    standard: "World Fir Gifts relic passport v1 (ERC-721 metadata JSON compatible, not minted)",
     token_id: tokenId,
     genome_sha256: genomeHash,
     name: `Хрустальный Шар #${seq} • ${gift?.card_preview?.teaser_tag || "Дар Севера"}`,
@@ -935,7 +944,7 @@ function buildNftRelicMetadata(gift, recipientCity = null) {
     }». Автор: ${gift?.card_preview?.author_display_name || "Хранитель"} (г. ${
       gift?.card_preview?.city || "Мирный"
     })${recipientCity ? ` ⇄ Получатель в г. ${recipientCity}` : ""}.`,
-    external_url: "https://world-fir-gifts.amvera.io",
+    external_url: giftShareUrl(gift),
     soulbound: true,
     human_crafted: true,
     edition: "1 of 1 (Hand-Crafted Voxel & 5-Track Audio Artifact)",
@@ -991,7 +1000,7 @@ function generateStandalone3DCapsuleHtml(nftMeta) {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>${escapeHtml(nftMeta.name)} — Вечная 3D-Капсула Ручной Работы (${escapeHtml(nftMeta.token_id)})</title>
+  <title>${escapeHtml(nftMeta.name)} — 3D-открытка (${escapeHtml(nftMeta.token_id)})</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -1077,6 +1086,8 @@ function generateStandalone3DCapsuleHtml(nftMeta) {
     }
     .trait-k { font-size: 10px; color: #94a3b8; text-transform: uppercase; }
     .trait-v { font-size: 12px; color: #fef08a; font-weight: 700; margin-top: 2px; }
+    .link { display: block; margin-top: 14px; font-size: 12px; color: #fbbf24; }
+    .offline { padding: 110px 20px; font-size: 12px; color: #94a3b8; }
   </style>
 </head>
 <body>
@@ -1084,10 +1095,11 @@ function generateStandalone3DCapsuleHtml(nftMeta) {
     <div class="badge">🤲 Ручная Работа Человека • ${escapeHtml(nftMeta.token_id)}</div>
     <h1>${escapeHtml(nftMeta.name)}</h1>
     <p class="desc">${escapeHtml(nftMeta.description)}</p>
-    <div id="canvas-wrap" title="Крутите 3D-шар мышью"></div>
+    <div id="canvas-wrap" title="Крутите шар мышью или пальцем"></div>
     <div class="hash">GENOME SHA-256: ${escapeHtml(nftMeta.genome_sha256)}</div>
-    <button class="btn" id="play-btn">🎻 Прослушать 4-голосную симфонию шкатулки</button>
+    <button class="btn" id="play-btn">▶ Прослушать мелодию шкатулки</button>
     <div class="grid" id="traits"></div>
+    <a class="link" href="${escapeHtml(nftMeta.external_url)}" target="_blank" rel="noopener">🎄 Открыть шар на Всемирной ёлке</a>
   </div>
   <script>
     const META = ${genomeJson};
@@ -1105,7 +1117,67 @@ function generateStandalone3DCapsuleHtml(nftMeta) {
       traitsEl.appendChild(d);
     });
 
+    const FREQS = {0:0,1:261.63,2:293.66,3:329.63,4:392,5:440,6:493.88,7:523.25,8:587.33,9:659.25,10:783.99,11:880,12:987.77,13:1046.5,14:1174.66,15:349.23,16:369.99,17:415.3,18:698.46};
+    let audioCtx = null;
+    function drum(ctx, kind, t) {
+      // простая «шкатулочная» перкуссия: бочка — синус вниз, остальное — шум
+      if (kind === 1) {
+        const o = ctx.createOscillator(), g = ctx.createGain();
+        o.frequency.setValueAtTime(140, t);
+        o.frequency.exponentialRampToValueAtTime(45, t + 0.15);
+        g.gain.setValueAtTime(0.35, t);
+        g.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
+        o.connect(g); g.connect(ctx.destination); o.start(t); o.stop(t + 0.22);
+        return;
+      }
+      const len = Math.floor(ctx.sampleRate * 0.12);
+      const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+      const d = buf.getChannelData(0);
+      for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / len);
+      const src = ctx.createBufferSource(), f = ctx.createBiquadFilter(), g = ctx.createGain();
+      src.buffer = buf;
+      f.type = kind === 2 ? "bandpass" : "highpass";
+      f.frequency.value = kind === 2 ? 1800 : 6000;
+      g.gain.value = kind === 2 ? 0.25 : 0.12;
+      src.connect(f); f.connect(g); g.connect(ctx.destination); src.start(t);
+    }
+    document.getElementById("play-btn").onclick = () => {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtx) return;
+      audioCtx = audioCtx || new AudioCtx();
+      const ctx = audioCtx;
+      if (ctx.state === "suspended") ctx.resume();
+      const mel = META.onchain_genome.melody || {};
+      const cTrack = mel.celesta_track || [];
+      const stepsCount = cTrack.length || 16;
+      const stepSec = 60 / (mel.tempo_bpm || 104) / 2;
+      const now = ctx.currentTime + 0.05;
+      for (let s = 0; s < stepsCount; s++) {
+        const t = now + s * stepSec;
+        [["celesta_track", "sine", 1], ["harp_track", "triangle", 0.5], ["cello_track", "sawtooth", 0.5], ["flute_track", "sine", 1.5]].forEach(([k, type, mult]) => {
+          const n = (mel[k] || [])[s] || 0;
+          if (n > 0 && FREQS[n]) {
+            const osc = ctx.createOscillator();
+            const g = ctx.createGain();
+            osc.type = type;
+            osc.frequency.setValueAtTime(FREQS[n] * mult, t);
+            g.gain.setValueAtTime(0.001, t);
+            g.gain.linearRampToValueAtTime(type === "sawtooth" ? 0.07 : 0.14, t + 0.03);
+            g.gain.exponentialRampToValueAtTime(0.001, t + stepSec * 1.4);
+            osc.connect(g); g.connect(ctx.destination);
+            osc.start(t); osc.stop(t + stepSec * 1.5);
+          }
+        });
+        const dh = (mel.drum_track || [])[s] || 0;
+        if (dh > 0) drum(ctx, dh, t);
+      }
+    };
+
     const wrap = document.getElementById("canvas-wrap");
+    if (!window.THREE) {
+      // нет интернета для three.js — мелодия и паспорт всё равно работают
+      wrap.innerHTML = '<div class="offline">3D-вид загрузится при подключении к интернету</div>';
+    } else {
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 100);
     camera.position.set(0, 1.8, 12.2);
@@ -1145,14 +1217,15 @@ function generateStandalone3DCapsuleHtml(nftMeta) {
     root.add(dome);
 
     let drag = false, px = 0, py = 0, ry = 0.5, rx = 0.12;
-    wrap.onmousedown = e => { drag = true; px = e.clientX; py = e.clientY; };
-    window.onmousemove = e => {
+    wrap.style.touchAction = "none";
+    wrap.onpointerdown = e => { drag = true; px = e.clientX; py = e.clientY; };
+    window.onpointermove = e => {
       if (!drag) return;
       ry += (e.clientX - px) * 0.015;
       rx = Math.max(-0.45, Math.min(0.6, rx + (e.clientY - py) * 0.01));
       px = e.clientX; py = e.clientY;
     };
-    window.onmouseup = () => drag = false;
+    window.onpointerup = () => drag = false;
 
     function loop() {
       requestAnimationFrame(loop);
@@ -1162,34 +1235,7 @@ function generateStandalone3DCapsuleHtml(nftMeta) {
       renderer.render(scene, camera);
     }
     loop();
-
-    const FREQS = {0:0,1:261.63,2:293.66,3:329.63,4:392,5:440,6:493.88,7:523.25,8:587.33,9:659.25,10:783.99,11:880,12:987.77,13:1046.5,14:1174.66,15:349.23,16:369.99,17:415.3,18:698.46};
-    document.getElementById("play-btn").onclick = () => {
-      const AudioCtx = window.AudioContext || window.webkitAudioContext;
-      const ctx = new AudioCtx();
-      const mel = META.onchain_genome.melody || {};
-      const cTrack = mel.celesta_track || [];
-      const stepsCount = cTrack.length || 8;
-      const stepSec = 60 / (mel.tempo_bpm || 104) / 2;
-      const now = ctx.currentTime + 0.05;
-      for (let s = 0; s < stepsCount; s++) {
-        const t = now + s * stepSec;
-        [["celesta_track", "sine", 1], ["harp_track", "triangle", 0.5], ["cello_track", "sawtooth", 0.5], ["flute_track", "sine", 1.5]].forEach(([k, type, mult]) => {
-          const n = (mel[k] || [])[s] || 0;
-          if (n > 0 && FREQS[n]) {
-            const osc = ctx.createOscillator();
-            const g = ctx.createGain();
-            osc.type = type;
-            osc.frequency.setValueAtTime(FREQS[n] * mult, t);
-            g.gain.setValueAtTime(0.001, t);
-            g.gain.linearRampToValueAtTime(0.14, t + 0.03);
-            g.gain.exponentialRampToValueAtTime(0.001, t + stepSec * 1.4);
-            osc.connect(g); g.connect(ctx.destination);
-            osc.start(t); osc.stop(t + stepSec * 1.5);
-          }
-        });
-      }
-    };
+    }
   </script>
 </body>
 </html>`;
@@ -1204,7 +1250,8 @@ function triggerBrowserFileDownload(filename, contentStr, mimeType) {
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  // Safari/Firefox не успевают начать скачивание, если отозвать ссылку сразу
+  window.setTimeout(() => URL.revokeObjectURL(url), 1500);
 }
 
 function harmonizeOrchestraFromWish(wishText, scaleId = "pentatonic") {
@@ -1500,6 +1547,11 @@ function generateProceduralGifts(count = 144) {
 // ============================================================================
 // 2. ZERO-OVERLAP 5-VOICE CHAMBER ORCHESTRA & DRUMS DAW ENGINE (v12.0)
 // ============================================================================
+const EXTRA_TIMBRES = new Set([
+  "piano", "musicbox", "bells", "glock", "epiano", "guitar",
+  "strings", "pad", "violin", "bass", "clarinet", "choir",
+]);
+
 class ChamberOrchestraSynth {
   constructor() {
     this.ctx = null;
@@ -1516,6 +1568,7 @@ class ChamberOrchestraSynth {
       drums: { muted: false, solo: false, volume: 0.85 },
     };
     this.listeners = new Set();
+    this.activeVoices = {};
   }
 
   subscribe(fn) {
@@ -1696,12 +1749,191 @@ class ChamberOrchestraSynth {
     }
   }
 
-  triggerVoice(instrument, freq, startTime, duration, targetBus = null) {
+  /**
+   * Дополнительные «обычные» тембры: пианино, шкатулка, колокола, гитара,
+   * струнные, хор и т.д. Всё синтезируется на лету через Web Audio — без
+   * загрузки сэмплов, поэтому работает и на слабом мобильном интернете.
+   */
+  synthExtra(timbre, freq, t, duration, dest, vol) {
+    if (!EXTRA_TIMBRES.has(timbre)) return false;
+    const ctx = this.ctx;
+    const env = (g, peak, attack, release) => {
+      g.gain.setValueAtTime(0.0008, t);
+      g.gain.linearRampToValueAtTime(peak * vol, t + attack);
+      g.gain.exponentialRampToValueAtTime(0.0008, t + attack + release);
+      return t + attack + release + 0.05;
+    };
+    const osc = (type, f, detune = 0) => {
+      const o = ctx.createOscillator();
+      o.type = type;
+      o.frequency.setValueAtTime(f, t);
+      if (detune) o.detune.setValueAtTime(detune, t);
+      this.registerOsc(o);
+      return o;
+    };
+    const run = (oscs, end) => {
+      oscs.forEach((o) => {
+        o.start(t);
+        o.stop(end);
+      });
+    };
+    const out = ctx.createGain();
+    out.connect(dest);
+
+    switch (timbre) {
+      case "piano": {
+        const a = osc("triangle", freq);
+        const b = osc("sine", freq * 2, 4);
+        const bg = ctx.createGain();
+        bg.gain.value = 0.35;
+        const lp = ctx.createBiquadFilter();
+        lp.type = "lowpass";
+        lp.frequency.setValueAtTime(freq * 6, t);
+        lp.frequency.exponentialRampToValueAtTime(freq * 1.5, t + 0.9);
+        a.connect(lp);
+        b.connect(bg).connect(lp);
+        lp.connect(out);
+        run([a, b], env(out, 0.24, 0.006, Math.min(1.6, 0.5 + duration * 2.5)));
+        break;
+      }
+      case "musicbox": {
+        const f = freq * 2;
+        const a = osc("sine", f);
+        const b = osc("sine", f * 4.02);
+        const bg = ctx.createGain();
+        bg.gain.setValueAtTime(0.25, t);
+        bg.gain.exponentialRampToValueAtTime(0.001, t + 0.12);
+        a.connect(out);
+        b.connect(bg).connect(out);
+        run([a, b], env(out, 0.16, 0.003, 0.9));
+        break;
+      }
+      case "bells": {
+        // FM-колокол: негармонический модулятор даёт «церковный» призвук
+        const car = osc("sine", freq);
+        const mod = osc("sine", freq * 1.4);
+        const mg = ctx.createGain();
+        mg.gain.setValueAtTime(freq * 2.2, t);
+        mg.gain.exponentialRampToValueAtTime(freq * 0.1, t + 1.6);
+        mod.connect(mg).connect(car.frequency);
+        car.connect(out);
+        run([car, mod], env(out, 0.17, 0.004, 2.2));
+        break;
+      }
+      case "glock": {
+        const a = osc("sine", freq * 2);
+        const b = osc("sine", freq * 2 * 2.76);
+        const bg = ctx.createGain();
+        bg.gain.value = 0.2;
+        a.connect(out);
+        b.connect(bg).connect(out);
+        run([a, b], env(out, 0.15, 0.002, 0.7));
+        break;
+      }
+      case "epiano": {
+        const car = osc("sine", freq);
+        const mod = osc("sine", freq * 7);
+        const mg = ctx.createGain();
+        mg.gain.setValueAtTime(freq * 0.9, t);
+        mg.gain.exponentialRampToValueAtTime(1, t + 0.4);
+        mod.connect(mg).connect(car.frequency);
+        car.connect(out);
+        run([car, mod], env(out, 0.22, 0.005, Math.min(1.4, 0.4 + duration * 2)));
+        break;
+      }
+      case "guitar": {
+        const a = osc("sawtooth", freq * 0.5);
+        const lp = ctx.createBiquadFilter();
+        lp.type = "lowpass";
+        lp.Q.value = 2;
+        lp.frequency.setValueAtTime(freq * 5, t);
+        lp.frequency.exponentialRampToValueAtTime(freq * 0.8, t + 0.35);
+        a.connect(lp).connect(out);
+        run([a], env(out, 0.2, 0.004, 0.75));
+        break;
+      }
+      case "strings":
+      case "pad": {
+        const isPad = timbre === "pad";
+        const a = osc("sawtooth", freq * (isPad ? 1 : 0.5), -8);
+        const b = osc("sawtooth", freq * (isPad ? 1 : 0.5), 8);
+        const lp = ctx.createBiquadFilter();
+        lp.type = "lowpass";
+        lp.frequency.setValueAtTime(isPad ? freq * 2.5 : freq * 3, t);
+        a.connect(lp);
+        b.connect(lp);
+        lp.connect(out);
+        const att = isPad ? 0.25 : 0.12;
+        run([a, b], env(out, isPad ? 0.08 : 0.1, att, duration * 1.8 + 0.3));
+        break;
+      }
+      case "violin": {
+        const a = osc("sawtooth", freq);
+        const vib = osc("sine", 5.6);
+        const vg = ctx.createGain();
+        vg.gain.value = freq * 0.006;
+        vib.connect(vg).connect(a.frequency);
+        const bp = ctx.createBiquadFilter();
+        bp.type = "lowpass";
+        bp.frequency.value = freq * 4;
+        a.connect(bp).connect(out);
+        run([a, vib], env(out, 0.1, 0.07, duration * 1.4 + 0.15));
+        break;
+      }
+      case "bass": {
+        const a = osc("triangle", freq * 0.25);
+        const b = osc("sine", freq * 0.5);
+        const bg = ctx.createGain();
+        bg.gain.value = 0.4;
+        a.connect(out);
+        b.connect(bg).connect(out);
+        run([a, b], env(out, 0.3, 0.01, Math.min(1.0, duration * 1.6 + 0.2)));
+        break;
+      }
+      case "clarinet": {
+        const a = osc("square", freq);
+        const lp = ctx.createBiquadFilter();
+        lp.type = "lowpass";
+        lp.frequency.value = freq * 2.2;
+        a.connect(lp).connect(out);
+        run([a], env(out, 0.07, 0.05, duration * 1.3 + 0.1));
+        break;
+      }
+      case "choir": {
+        // три голоса + форманты гласной «а»
+        const vs = [-10, 0, 9].map((d) => osc("sawtooth", freq, d));
+        const f1 = ctx.createBiquadFilter();
+        f1.type = "bandpass";
+        f1.frequency.value = 750;
+        f1.Q.value = 4;
+        const f2 = ctx.createBiquadFilter();
+        f2.type = "bandpass";
+        f2.frequency.value = 1150;
+        f2.Q.value = 5;
+        vs.forEach((v) => {
+          v.connect(f1);
+          v.connect(f2);
+        });
+        f1.connect(out);
+        f2.connect(out);
+        run(vs, env(out, 0.22, 0.18, duration * 1.6 + 0.35));
+        break;
+      }
+      default:
+        return false;
+    }
+    return true;
+  }
+
+  triggerVoice(track, freq, startTime, duration, targetBus = null, timbreOverride = null) {
     if (!this.ctx || freq <= 0) return;
-    if (!this.isInstrumentAudible(instrument)) return;
+    if (!this.isInstrumentAudible(track)) return;
 
     const destination = targetBus || this.sessionMasterGain || this.ctx.destination;
-    const vol = this.trackConfig[instrument]?.volume ?? 0.85;
+    const vol = this.trackConfig[track]?.volume ?? 0.85;
+    // Дорожка (track) — это «слот», а звучит выбранный для неё тембр.
+    const instrument = timbreOverride || this.activeVoices?.[track] || track;
+    if (this.synthExtra(instrument, freq, startTime, duration, destination, vol)) return;
 
     if (instrument === "celesta") {
       const osc = this.ctx.createOscillator();
@@ -1835,7 +2067,7 @@ class ChamberOrchestraSynth {
     }
   }
 
-  playSingleNote(instr, noteIdx) {
+  playSingleNote(instr, noteIdx, timbre = null) {
     this.init();
     if (!this.ctx || noteIdx <= 0) return;
     if (instr === "drums") {
@@ -1852,7 +2084,8 @@ class ChamberOrchestraSynth {
       freq,
       this.ctx.currentTime + 0.01,
       0.38,
-      this.ctx.destination
+      this.ctx.destination,
+      timbre
     );
   }
 
@@ -1864,7 +2097,8 @@ class ChamberOrchestraSynth {
     celloTrack = [],
     fluteTrack = [],
     drumTrack = [],
-    onStepCallback = null
+    onStepCallback = null,
+    voices = null
   ) {
     if (this.activePlayingId === playbackId) {
       this.stop();
@@ -1879,7 +2113,8 @@ class ChamberOrchestraSynth {
       fluteTrack,
       drumTrack,
       onStepCallback,
-      playbackId
+      playbackId,
+      voices
     );
     return true;
   }
@@ -1892,13 +2127,15 @@ class ChamberOrchestraSynth {
     fluteTrack = [],
     drumTrack = [],
     onStepCallback = null,
-    playbackId = "studio-preview"
+    playbackId = "studio-preview",
+    voices = null
   ) {
     this.stop();
     const bus = this.createFreshSessionBus();
     if (!this.ctx || !bus) return;
 
     this.activePlayingId = playbackId;
+    this.activeVoices = voices || {};
     const c16 = normalizeTrackTo16Steps(celestaTrack);
     const h16 = normalizeTrackTo16Steps(harpTrack);
     const v16 = normalizeTrackTo16Steps(celloTrack);
@@ -1959,7 +2196,8 @@ class ChamberOrchestraSynth {
           f16,
           d16,
           onStepCallback,
-          playbackId
+          playbackId,
+          voices
         );
       } else {
         this.activePlayingId = null;
@@ -1988,6 +2226,7 @@ class ChamberOrchestraSynth {
     const tick = () => {
       if (this.activePlayingId !== playbackId || !this.ctx) return;
       const pat = getPattern() || {};
+      this.activeVoices = pat.voices || {};
       const stepSec = 60 / Math.max(40, Math.min(220, pat.tempo || 104)) / 2;
       while (nextTime < this.ctx.currentTime + 0.12) {
         for (const v of voices) {
@@ -2341,10 +2580,14 @@ const SCALE_SHORT = {
 };
 
 const MELODY_MOODS = [
-  { id: "tale", label: "❄️ Сказка", text: "сказочный рождественский вальс со снежными бубенцами" },
-  { id: "lullaby", label: "🌙 Колыбельная", text: "тихая нежная колыбельная зимней ночи" },
-  { id: "party", label: "🎉 Праздник", text: "весёлый праздничный марш, бубенцы и смех" },
-  { id: "aurora", label: "✨ Сияние", text: "волшебное северное сияние и звёзды над тайгой" },
+  { id: "tale", label: "❄️ Сказка", text: "сказочный рождественский вальс со снежными бубенцами",
+    voices: { celesta: "musicbox", harp: "harp", cello: "strings", flute: "flute" } },
+  { id: "lullaby", label: "🌙 Колыбельная", text: "тихая нежная колыбельная зимней ночи",
+    voices: { celesta: "celesta", harp: "piano", cello: "pad", flute: "choir" } },
+  { id: "party", label: "🎉 Праздник", text: "весёлый праздничный марш, бубенцы и смех",
+    voices: { celesta: "glock", harp: "guitar", cello: "bass", flute: "clarinet" } },
+  { id: "aurora", label: "✨ Сияние", text: "волшебное северное сияние и звёзды над тайгой",
+    voices: { celesta: "bells", harp: "epiano", cello: "pad", flute: "choir" } },
 ];
 
 const INSTRUMENT_SHORT = {
@@ -2357,6 +2600,28 @@ const INSTRUMENT_SHORT = {
 
 const STUDIO_PLAYBACK_ID = "workshop-live";
 
+// Тембры для мелодических дорожек: от шкатулки до хора
+const VOICE_OPTIONS = [
+  { id: "musicbox", icon: "🎁", name: "Шкатулка" },
+  { id: "celesta", icon: "🔔", name: "Челеста" },
+  { id: "piano", icon: "🎹", name: "Пианино" },
+  { id: "bells", icon: "🛎️", name: "Колокола" },
+  { id: "glock", icon: "✨", name: "Глокеншпиль" },
+  { id: "epiano", icon: "🎛️", name: "Электропиано" },
+  { id: "harp", icon: "🪕", name: "Арфа" },
+  { id: "guitar", icon: "🎸", name: "Гитара" },
+  { id: "strings", icon: "🎻", name: "Струнные" },
+  { id: "violin", icon: "🎻", name: "Скрипка" },
+  { id: "cello", icon: "🎻", name: "Виолончель" },
+  { id: "bass", icon: "🔊", name: "Бас" },
+  { id: "flute", icon: "🪈", name: "Флейта" },
+  { id: "clarinet", icon: "🎷", name: "Кларнет" },
+  { id: "choir", icon: "👼", name: "Хор" },
+  { id: "pad", icon: "🌌", name: "Синт-пэд" },
+];
+const VOICE_BY_ID = Object.fromEntries(VOICE_OPTIONS.map((v) => [v.id, v]));
+const DEFAULT_VOICES = { celesta: "celesta", harp: "harp", cello: "cello", flute: "flute" };
+
 function MelodyStudio({
   tracks,
   setTrack,
@@ -2367,6 +2632,8 @@ function MelodyStudio({
   onCompose,
   autoplayTick = 0,
   harmonyPanel,
+  voices = DEFAULT_VOICES,
+  setVoice,
 }) {
   const [active, setActive] = useState("celesta");
   const [isPlaying, setIsPlaying] = useState(false);
@@ -2376,7 +2643,7 @@ function MelodyStudio({
   const [showHarmony, setShowHarmony] = useState(false);
   const [mutes, setMutes] = useState({});
   const patternRef = useRef(null);
-  patternRef.current = { tempo, loop, ...tracks };
+  patternRef.current = { tempo, loop, voices, ...tracks };
 
   useEffect(() => {
     const unsub = musicBoxSynth.subscribe((st) => {
@@ -2422,11 +2689,12 @@ function MelodyStudio({
       ? DRUM_INSTRUMENTS.filter((r) => r.index > 0)
       : NOTE_META.filter((r) => r.index > 0 && scale.notes.includes(r.index));
   const track = tracks[active] || [];
-  const meta = INSTRUMENT_SHORT[active];
+  const slotVoice = (id) => (id === "drums" ? null : VOICE_BY_ID[voices[id] || DEFAULT_VOICES[id]]);
+  const meta = { ...INSTRUMENT_SHORT[active], ...(slotVoice(active) ? { icon: slotVoice(active).icon, name: slotVoice(active).name } : {}) };
   const cursor = isPlaying ? playStep : null;
 
   const toggleCell = (stepIdx, noteVal) => {
-    musicBoxSynth.playSingleNote(active, noteVal);
+    musicBoxSynth.playSingleNote(active, noteVal, active === "drums" ? null : voices[active] || DEFAULT_VOICES[active]);
     setTrack(active, (prev) => prev.map((n, i) => (i === stepIdx ? (n === noteVal ? 0 : noteVal) : n)));
   };
 
@@ -2486,7 +2754,7 @@ function MelodyStudio({
           <button
             key={m.id}
             type="button"
-            onClick={() => onCompose(m.text)}
+            onClick={() => onCompose(m.text, m.voices)}
             className="px-3 py-1.5 rounded-full bg-white/5 hover:bg-white/10 border border-white/10 text-xs text-slate-200"
           >
             {m.label}
@@ -2496,8 +2764,10 @@ function MelodyStudio({
 
       {/* Дорожки */}
       <div className="flex gap-1.5 overflow-x-auto pb-0.5">
-        {Object.entries(INSTRUMENT_SHORT).map(([id, m]) => {
+        {Object.entries(INSTRUMENT_SHORT).map(([id, base]) => {
           const used = (tracks[id] || []).some((n) => n > 0);
+          const v = slotVoice(id);
+          const m = v ? { ...base, icon: v.icon, name: v.name } : base;
           return (
             <div key={id} className="flex shrink-0">
               <button
@@ -2527,6 +2797,29 @@ function MelodyStudio({
           );
         })}
       </div>
+
+      {active !== "drums" && (
+        <div className="flex flex-wrap items-center gap-1">
+          <span className="text-[11px] text-slate-400 mr-1">Звук дорожки:</span>
+          {VOICE_OPTIONS.map((v) => (
+            <button
+              key={v.id}
+              type="button"
+              onClick={() => {
+                setVoice(active, v.id);
+                musicBoxSynth.playSingleNote(active, 7, v.id);
+              }}
+              className={`px-2.5 py-1 rounded-full text-[11px] border ${
+                (voices[active] || DEFAULT_VOICES[active]) === v.id
+                  ? "bg-white/15 border-white/30 text-white"
+                  : "bg-white/[0.03] border-white/10 text-slate-400 hover:text-slate-200"
+              }`}
+            >
+              {v.icon} {v.name}
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* Сетка 16 шагов с бегущей полосой */}
       <div className="rounded-2xl bg-black/30 border border-white/10 p-1.5 sm:p-2">
@@ -2640,7 +2933,16 @@ function MelodyStudio({
   );
 }
 
-function GiftWorkshopModal({ isOpen, onClose, onGiftCreated, remainingGifts = null, maxGifts = 3 }) {
+function GiftWorkshopModal({
+  isOpen,
+  onClose,
+  onGiftCreated,
+  onGiftUpdated,
+  editGift = null,
+  remainingGifts = null,
+  maxGifts = 3,
+}) {
+  const isEdit = Boolean(editGift);
   const [stepTab, setStepTab] = useState(0);
   const [voxels, setVoxels] = useState(() => [...VOXEL_BLUEPRINTS[0].blocks]);
   const [activeLayerY, setActiveLayerY] = useState(2);
@@ -2674,6 +2976,7 @@ function GiftWorkshopModal({ isOpen, onClose, onGiftCreated, remainingGifts = nu
     { sectorIdx: 11, ring: "major", label: "F" },
   ]);
   const [autoplayTick, setAutoplayTick] = useState(0);
+  const [voices, setVoices] = useState(() => ({ ...DEFAULT_VOICES, celesta: "musicbox" }));
   const composeSeedRef = useRef(0);
 
   const [teaserTag, setTeaserTag] = useState("Тёплый маяк Севера");
@@ -2689,13 +2992,49 @@ function GiftWorkshopModal({ isOpen, onClose, onGiftCreated, remainingGifts = nu
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState("");
 
+  // Режим правки: загружаем шар мастера в мастерскую; после правки новая
+  // мастерская снова открывается с чистого шаблона.
+  const loadedKeyRef = useRef("new");
+  useEffect(() => {
+    if (!isOpen) return;
+    const key = editGift ? `edit:${editGift.id}` : "new";
+    if (key === loadedKeyRef.current) return;
+    loadedKeyRef.current = key;
+    const g = editGift;
+    const sg = g?.snowglobe || {};
+    const mel = g?.melody || {};
+    const card = g?.card_preview || {};
+    const pick = (arr, fallback) => (Array.isArray(arr) && arr.length ? normalizeTrackTo16Steps(arr) : [...fallback]);
+    setStepTab(0);
+    setSubmitError("");
+    setVoxels(g ? (sg.voxels || []).map((v) => ({ ...v })) : [...VOXEL_BLUEPRINTS[0].blocks]);
+    setBaseMaterial(sg.base_material || "mahogany");
+    setGlitterColor(sg.glitter_color || "#fde047");
+    setEngravingText(g ? sg.engraving_text || "" : "Ручная работа • 2026");
+    setTempoBpm(mel.tempo_bpm || 104);
+    setCelestaTrack(pick(g && mel.celesta_track, MELODY_PRESETS[0].celesta));
+    setHarpTrack(pick(g && mel.harp_track, MELODY_PRESETS[0].harp));
+    setCelloTrack(pick(g && mel.cello_track, MELODY_PRESETS[0].cello));
+    setFluteTrack(pick(g && mel.flute_track, MELODY_PRESETS[0].flute));
+    setDrumTrack(pick(g && mel.drum_track, MELODY_PRESETS[0].drums));
+    setVoices(g ? { ...DEFAULT_VOICES, ...(mel.voices || {}) } : { ...DEFAULT_VOICES, celesta: "musicbox" });
+    setTeaserTag(g ? card.teaser_tag || "" : "Тёплый маяк Севера");
+    setSecretWish(g ? g.secret_wish || "" : WISH_INSPIRATION_PROMPTS[0].text);
+    setAuthorName(g ? card.author_display_name || "" : "Хранитель Огня");
+    setCity(g ? card.city || "" : "Санкт-Петербург");
+    setTotemPet(card.totem_pet || TOTEM_PETS[0]);
+    setContactHandle("");
+    setBoxShape(g?.packaging?.box_shape || "cube");
+    setWaxSeal(g?.packaging?.wax_seal_stamp || "owl");
+  }, [isOpen, editGift]);
+
   if (!isOpen) return null;
 
   const voxelSafety = inspectVoxelGeometrySafety(voxels);
   const effectiveContact = contactHandle.trim();
   // Контакт не модерируется как публичный текст: его видит только партнёр
   // после двойного согласия, а ссылки вида t.me/nick здесь законны.
-  const contactIsValid = effectiveContact.length >= 3;
+  const contactIsValid = isEdit ? effectiveContact.length === 0 || effectiveContact.length >= 3 : effectiveContact.length >= 3;
   const textSafety = inspectContentSafety({
     Пожелание: secretWish,
     Бирка: teaserTag,
@@ -2703,7 +3042,7 @@ function GiftWorkshopModal({ isOpen, onClose, onGiftCreated, remainingGifts = nu
     Автор: authorName,
     Город: city,
   });
-  const limitReached = remainingGifts === 0;
+  const limitReached = !isEdit && remainingGifts === 0;
   const canSubmit =
     voxelSafety.isSafe && textSafety.isSafe && contactIsValid && !isSubmitting && !limitReached;
 
@@ -2756,7 +3095,8 @@ function GiftWorkshopModal({ isOpen, onClose, onGiftCreated, remainingGifts = nu
     );
   };
 
-  const handleAiGenerateSymphony = (moodText = "") => {
+  const handleAiGenerateSymphony = (moodText = "", moodVoices = null) => {
+    if (moodVoices) setVoices({ ...moodVoices });
     composeSeedRef.current += 1;
     const harmonized = harmonizeOrchestraFromWish(
       `${moodText} ${secretWish} #${composeSeedRef.current}`,
@@ -2776,7 +3116,7 @@ function GiftWorkshopModal({ isOpen, onClose, onGiftCreated, remainingGifts = nu
     setIsSubmitting(true);
     setSubmitError("");
     try {
-      await onGiftCreated({
+      await (isEdit ? onGiftUpdated : onGiftCreated)({
       snowglobe: {
         sculpture_id: "cottage",
         voxels,
@@ -2798,6 +3138,7 @@ function GiftWorkshopModal({ isOpen, onClose, onGiftCreated, remainingGifts = nu
         cello_track: celloTrack,
         flute_track: fluteTrack,
         drum_track: drumTrack,
+        voices,
       },
       card: {
         teaser_tag: teaserTag,
@@ -2938,7 +3279,7 @@ function GiftWorkshopModal({ isOpen, onClose, onGiftCreated, remainingGifts = nu
         {/* Шапка: заголовок + шаги */}
         <div className="px-4 sm:px-5 pt-4 pb-3 border-b border-white/10">
           <div className="flex items-center justify-between gap-3">
-            <div className="font-serif text-xl text-amber-50">Новый шар</div>
+            <div className="font-serif text-xl text-amber-50">{isEdit ? "Переделать шар" : "Новый шар"}</div>
             <div className="flex items-center gap-2">
               <span className="text-[11px] text-slate-400 hidden sm:inline">✨ {liveScore.total}</span>
               <button
@@ -3090,6 +3431,8 @@ function GiftWorkshopModal({ isOpen, onClose, onGiftCreated, remainingGifts = nu
               onCompose={handleAiGenerateSymphony}
               autoplayTick={autoplayTick}
               harmonyPanel={harmonyPanel}
+              voices={voices}
+              setVoice={(slot, id) => setVoices((p) => ({ ...p, [slot]: id }))}
             />
           )}
 
@@ -3144,7 +3487,7 @@ function GiftWorkshopModal({ isOpen, onClose, onGiftCreated, remainingGifts = nu
                   type="text"
                   value={contactHandle}
                   onChange={(e) => setContactHandle(e.target.value)}
-                  placeholder="Контакт: @ник, телефон или e-mail"
+                  placeholder={isEdit ? "Новый контакт (пусто — оставить прежний)" : "Контакт: @ник, телефон или e-mail"}
                   aria-label="Контакт"
                   maxLength={120}
                   autoComplete="off"
@@ -3183,7 +3526,9 @@ function GiftWorkshopModal({ isOpen, onClose, onGiftCreated, remainingGifts = nu
             <span />
           )}
           <div className="flex-1 min-w-0 text-[11px] text-slate-400 truncate text-center">
-            {limitReached
+            {isEdit
+              ? "Свечи сохранятся"
+              : limitReached
               ? `У вас уже ${maxGifts} шара — это максимум`
               : isLast && !contactIsValid
               ? "Добавьте контакт для обмена"
@@ -3198,7 +3543,7 @@ function GiftWorkshopModal({ isOpen, onClose, onGiftCreated, remainingGifts = nu
               onClick={handleSubmit}
               className="px-5 py-2.5 rounded-xl bg-amber-300 hover:bg-amber-200 disabled:opacity-40 text-slate-950 font-semibold text-sm"
             >
-              {isSubmitting ? "Вешаем…" : "🎄 Повесить на Ёлку"}
+              {isSubmitting ? (isEdit ? "Сохраняем…" : "Вешаем…") : isEdit ? "💾 Сохранить шар" : "🎄 Повесить на Ёлку"}
             </button>
           ) : (
             <button
@@ -3484,6 +3829,33 @@ function MiracleRingModal({
   );
 }
 
+function ShareGiftButton({ gift, title }) {
+  const [copied, setCopied] = useState(false);
+  const share = async () => {
+    const url = giftShareUrl(gift);
+    try {
+      if (navigator.share) {
+        await navigator.share({ title, text: "Шар на Всемирной ёлке 🎄", url });
+        return;
+      }
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2200);
+    } catch {
+      /* окно «Поделиться» закрыли — ничего не делаем */
+    }
+  };
+  return (
+    <button
+      type="button"
+      onClick={share}
+      className="w-full py-2.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-slate-100 text-xs font-semibold"
+    >
+      {copied ? "✓ Ссылка скопирована" : "🔗 Поделиться ссылкой на шар"}
+    </button>
+  );
+}
+
 function NftRelicPassportModal({ isOpen, onClose, gift, recipientCity }) {
   if (!isOpen || !gift) return null;
   const nftMeta = buildNftRelicMetadata(gift, recipientCity);
@@ -3493,7 +3865,7 @@ function NftRelicPassportModal({ isOpen, onClose, gift, recipientCity }) {
       <div className="max-w-lg w-full bg-[#091224] border border-sky-400/50 rounded-3xl p-5 space-y-4 shadow-2xl my-auto">
         <div className="flex items-center justify-between">
           <span className="text-xs font-mono text-sky-300 font-bold">
-            💎 {nftMeta.token_id} • Soulbound 1/1
+            📜 Паспорт шара · {nftMeta.token_id}
           </span>
           <button
             type="button"
@@ -3512,7 +3884,7 @@ function NftRelicPassportModal({ isOpen, onClose, gift, recipientCity }) {
         </p>
 
         <div className="p-2.5 rounded-xl bg-slate-950 border border-slate-800 font-mono text-[10px] text-sky-300 break-all">
-          SHA-256 GENOME: {nftMeta.genome_sha256}
+          Отпечаток (SHA-256): {nftMeta.genome_sha256}
         </div>
 
         <div className="grid grid-cols-2 gap-2">
@@ -3531,6 +3903,13 @@ function NftRelicPassportModal({ isOpen, onClose, gift, recipientCity }) {
           ))}
         </div>
 
+        <p className="text-[11px] text-slate-400 leading-snug">
+          Паспорт и 3D-открытка — память о шаре: открытка работает без сайта, её можно переслать
+          или сохранить. В блокчейн шар не выпускается.
+        </p>
+
+        {!gift.offline && <ShareGiftButton gift={gift} title={nftMeta.name} />}
+
         <div className="flex flex-col sm:flex-row gap-2 pt-1">
           <button
             type="button"
@@ -3543,7 +3922,7 @@ function NftRelicPassportModal({ isOpen, onClose, gift, recipientCity }) {
             }
             className="flex-1 py-2.5 px-3 rounded-xl bg-gradient-to-r from-amber-400 to-yellow-500 text-slate-950 font-bold text-xs"
           >
-            💎 Скачать Вечную 3D-Капсулу (.HTML)
+            ⬇ 3D-открытка (.html)
           </button>
           <button
             type="button"
@@ -3556,7 +3935,7 @@ function NftRelicPassportModal({ isOpen, onClose, gift, recipientCity }) {
             }
             className="py-2.5 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-sky-300 border border-sky-400/40 font-bold text-xs"
           >
-            📄 JSON (ERC-721 / TON)
+            Метаданные (.json)
           </button>
         </div>
       </div>
@@ -3808,6 +4187,8 @@ function NewLookMenu({
   candleQuota,
   candleLeaders,
   onShowGift,
+  garlandMode,
+  onGarlandMode,
 }) {
   if (!isOpen) return null;
   const chip = (active) =>
@@ -3836,6 +4217,21 @@ function NewLookMenu({
 
         <MenuSection title="Свечи дня">
           <CandleDaySection quota={candleQuota} leaders={candleLeaders} onShowGift={onShowGift} />
+        </MenuSection>
+
+        <MenuSection title="Гирлянда">
+          <div className="grid grid-cols-3 gap-1.5">
+            {[
+              { id: "warm", label: "Тёплая", icon: "🟡" },
+              { id: "retro", label: "Цветная", icon: "🌈" },
+              { id: "both", label: "Обе", icon: "✨" },
+            ].map((g) => (
+              <button key={g.id} type="button" onClick={() => onGarlandMode(g.id)} className={chip(garlandMode === g.id)}>
+                <div className="text-base leading-none mb-1">{g.icon}</div>
+                {g.label}
+              </button>
+            ))}
+          </div>
         </MenuSection>
 
         <MenuSection title="Время суток">
@@ -3923,6 +4319,7 @@ function CompactGiftCard({
   onInspect,
   onNft,
   onReport,
+  onEdit,
 }) {
   const [expanded, setExpanded] = useState(false);
   const iconBtn =
@@ -4017,6 +4414,11 @@ function CompactGiftCard({
           <button type="button" onClick={onInspect} className="py-2 rounded-xl bg-white/5 hover:bg-white/10 text-slate-200">
             Рассмотреть шар
           </button>
+          {isOwn && !gift.offline && onEdit && (
+            <button type="button" onClick={onEdit} className="py-2 rounded-xl bg-amber-300/15 hover:bg-amber-300/25 text-amber-100">
+              ✏️ Переделать шар
+            </button>
+          )}
           <button type="button" onClick={onNft} className="py-2 rounded-xl bg-white/5 hover:bg-white/10 text-slate-200">
             Паспорт и 3D-капсула
           </button>
@@ -4111,6 +4513,23 @@ export default function App() {
   });
 
   const [isWorkshopOpen, setIsWorkshopOpen] = useState(false);
+  const [garlandMode, setGarlandMode] = useState(() => {
+    try {
+      return localStorage.getItem("wfg_garland") || "both";
+    } catch {
+      return "both";
+    }
+  });
+  const garlandModeRef = useRef(garlandMode);
+  useEffect(() => {
+    garlandModeRef.current = garlandMode;
+    firApiRef.current?.setGarlandMode?.(garlandMode);
+    try {
+      localStorage.setItem("wfg_garland", garlandMode);
+    } catch {
+      /* без хранилища */
+    }
+  }, [garlandMode]);
   const [isRingModalOpen, setIsRingModalOpen] = useState(false);
   const [myHungGift, setMyHungGift] = useState(null);
   const [owlBanner, setOwlBanner] = useState(null);
@@ -4197,7 +4616,10 @@ export default function App() {
 
   // Новый облик: камера облетает Ёлку к выбранному шару и чуть приближается.
   // Первый автоматический выбор при загрузке пропускаем — сцена открывается общим планом.
-  const skipFirstFocusRef = useRef(true);
+  // По ссылке /?gift=<id> — наоборот, сразу летим к нужному шару.
+  const skipFirstFocusRef = useRef(
+    !(typeof window !== "undefined" && new URLSearchParams(window.location.search).get("gift"))
+  );
   const focusKey = selectedGift
     ? `${selectedGift.id}:${selectedGift.coordinates?.sequence_number}`
     : "";
@@ -4610,7 +5032,17 @@ export default function App() {
       }
       giftsMapRef.current = map;
 
-      const firstGift = map.get(0);
+      // Ссылка /?gift=<id> открывает конкретный шар (из «Поделиться» и 3D-открытки)
+      const wantedId = new URLSearchParams(window.location.search).get("gift");
+      let firstGift = map.get(0);
+      if (wantedId) {
+        for (const g of map.values()) {
+          if (g.id === wantedId) {
+            firstGift = g;
+            break;
+          }
+        }
+      }
       if (firstGift) setSelectedGift({ ...firstGift });
       syncInstancedMeshes();
     };
@@ -5763,6 +6195,7 @@ export default function App() {
       fir = createRealisticFir({ isMobile: isMobileGpu });
       scene.add(fir.group);
       firApiRef.current = fir;
+      fir.setGarlandMode?.(garlandModeRef.current);
       fir.setGiftHangers(lastHangersRef.current);
 
       // Поляна: равнина, лес из настоящих елей, викторианские фонари, сугробы
@@ -5974,7 +6407,9 @@ export default function App() {
                 hitGift.melody.harp_track,
                 hitGift.melody.cello_track,
                 hitGift.melody.flute_track,
-                hitGift.melody.drum_track
+                hitGift.melody.drum_track,
+                null,
+                hitGift.melody.voices
               );
             } else {
               setSelectedGift({ ...hitGift });
@@ -5986,7 +6421,8 @@ export default function App() {
                 hitGift.melody.flute_track,
                 hitGift.melody.drum_track,
                 null,
-                hitGift.id
+                hitGift.id,
+                hitGift.melody.voices
               );
             }
           }
@@ -6462,6 +6898,48 @@ export default function App() {
     }
   };
 
+  const [editingGift, setEditingGift] = useState(null);
+
+  const handleOpenEdit = async (giftId) => {
+    try {
+      const mine = await apiFetchMyGift(giftId);
+      if (!mine.can_edit) {
+        const when = mine.next_edit_at
+          ? new Date(mine.next_edit_at).toLocaleString("ru-RU", { day: "numeric", month: "long", hour: "2-digit", minute: "2-digit" })
+          : null;
+        showToast(
+          when
+            ? `Шар можно переделывать раз в ${mine.edit_cooldown_days} дн. Следующая правка — ${when}.`
+            : "Сейчас этот шар изменить нельзя.",
+          "info"
+        );
+        return;
+      }
+      musicBoxSynth.stop();
+      setEditingGift(mine);
+      setIsWorkshopOpen(true);
+    } catch (err) {
+      showToast(isNetworkError(err) ? "Нет связи с Ёлкой — попробуйте позже." : err.message, "warn");
+    }
+  };
+
+  const handleGiftUpdated = async (formData) => {
+    if (!editingGift) return;
+    const dto = await apiUpdateGift(editingGift.id, formData);
+    const fresh = giftNodeFromDTO(dto);
+    for (const [seq, g] of giftsMapRef.current.entries()) {
+      if (g.id === dto.id) {
+        giftsMapRef.current.set(seq, { ...fresh, coordinates: { ...g.coordinates } });
+        break;
+      }
+    }
+    const placed = resortTreeByLightHierarchy(dto.id);
+    syncInstancedMeshes();
+    if (placed) setSelectedGift(placed);
+    setEditingGift(null);
+    showToast("✨ Шар обновлён! Свечи остались с ним.", "success");
+  };
+
   const handleGiftCreated = async (formData) => {
     const orderIdx = giftsMapRef.current.size;
     const wishText = formData.card.secret_wish || "";
@@ -6546,7 +7024,8 @@ export default function App() {
       placedGift.melody.flute_track,
       placedGift.melody.drum_track,
       null,
-      placedGift.id
+      placedGift.id,
+      placedGift.melody.voices
     );
   };
 
@@ -6576,7 +7055,8 @@ export default function App() {
         nextGift.melody.flute_track,
         nextGift.melody.drum_track,
         null,
-        nextGift.id
+        nextGift.id,
+        nextGift.melody.voices
       );
     }
   };
@@ -6659,6 +7139,8 @@ export default function App() {
         }}
         candleQuota={candleQuota}
         candleLeaders={candleLeaders}
+        garlandMode={garlandMode}
+        onGarlandMode={setGarlandMode}
         onShowGift={focusGiftById}
         onOpenGuide={() => {
           setIsMenuOpen(false);
@@ -6923,7 +7405,9 @@ export default function App() {
               selectedGift.melody.harp_track,
               selectedGift.melody.cello_track,
               selectedGift.melody.flute_track,
-              selectedGift.melody.drum_track
+              selectedGift.melody.drum_track,
+              null,
+              selectedGift.melody.voices
             )
           }
           onToggleLoop={() => musicBoxSynth.setLooping(!audioPlaybackState.isLooping)}
@@ -6939,6 +7423,7 @@ export default function App() {
           onInspect={() => setIsInspectModalOpen(true)}
           onNft={() => setNftModalState({ isOpen: true, gift: selectedGift, recipientCity: null })}
           onReport={handleReportGift}
+          onEdit={() => handleOpenEdit(selectedGift.id)}
         />
       )}
 
@@ -7102,7 +7587,9 @@ export default function App() {
                   selectedGift.melody.harp_track,
                   selectedGift.melody.cello_track,
                   selectedGift.melody.flute_track,
-                  selectedGift.melody.drum_track
+                  selectedGift.melody.drum_track,
+                  null,
+                  selectedGift.melody.voices
                 )
               }
               className={`flex-1 py-2 px-3 rounded-xl border text-xs font-bold whitespace-nowrap transition ${
@@ -7189,8 +7676,13 @@ export default function App() {
       {/* Модальное окно Мастерской 3D-Шара и 5-дорожечной Симфонии */}
       <GiftWorkshopModal
         isOpen={isWorkshopOpen}
-        onClose={() => setIsWorkshopOpen(false)}
+        onClose={() => {
+          setIsWorkshopOpen(false);
+          setEditingGift(null);
+        }}
         onGiftCreated={handleGiftCreated}
+        onGiftUpdated={handleGiftUpdated}
+        editGift={editingGift}
         remainingGifts={isOfflineMode ? null : Math.max(0, maxGifts - myGiftIds.size)}
         maxGifts={maxGifts}
       />
@@ -7210,7 +7702,7 @@ export default function App() {
           key={toast.id}
           role="status"
           aria-live="polite"
-          className="fixed left-1/2 -translate-x-1/2 bottom-24 md:bottom-6 z-[60] max-w-[92vw] sm:max-w-md pointer-events-none"
+          className={`fixed left-1/2 -translate-x-1/2 z-[60] max-w-[92vw] sm:max-w-md pointer-events-none ${LOOK_NEW ? "top-20" : "bottom-24 md:bottom-6"}`}
         >
           <div
             className={`px-4 py-2.5 rounded-2xl border shadow-2xl backdrop-blur-xl text-xs sm:text-sm leading-snug ${

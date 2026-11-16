@@ -95,8 +95,17 @@ def _create_index(conn: Connection, ddl: str, name: str) -> None:
         logger.error("[Migrate] Не удалось создать индекс %s: %s", name, exc)
 
 
+def _add_gift_edited_at(conn: Connection) -> None:
+    if "edited_at" in _columns(conn, "gifts"):
+        return
+    col_type = "TIMESTAMP WITH TIME ZONE" if conn.dialect.name == "postgresql" else "DATETIME"
+    conn.execute(text(f"ALTER TABLE gifts ADD COLUMN edited_at {col_type} NULL"))
+    logger.info("[Migrate] gifts.edited_at добавлена.")
+
+
 def run_migrations(conn: Connection) -> None:
     _add_is_demo(conn)
+    _add_gift_edited_at(conn)
     _mark_demo_users(conn)
     _hash_legacy_fingerprints(conn)
     _drop_demo_ring(conn)

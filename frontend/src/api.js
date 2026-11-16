@@ -86,6 +86,10 @@ export const fetchGifts = () => request("/gifts", { auth: false, timeoutMs: 1500
 
 export const createGift = (payload) => request("/gifts", { method: "POST", body: payload });
 
+export const fetchMyGift = (giftId) => request(`/gifts/${encodeURIComponent(giftId)}/mine`);
+export const updateGift = (giftId, payload) =>
+  request(`/gifts/${encodeURIComponent(giftId)}`, { method: "PUT", body: payload });
+
 export const lightGiftCandle = (giftId) =>
   request(`/gifts/${encodeURIComponent(giftId)}/candle`, { method: "POST" });
 

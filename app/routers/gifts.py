@@ -21,8 +21,10 @@ from app.schemas import (
     GiftCreateRequest,
     GiftReportRequest,
     GiftReportResultDTO,
+    GiftUpdateRequest,
     LeaderboardDTO,
     LeaderEntryDTO,
+    MyGiftDTO,
     PublicShowcaseGiftDTO,
     normalize_contact,
     quality_tier_badge,
@@ -132,6 +134,147 @@ async def list_gifts(request: Request, session: AsyncSession = Depends(get_db)):
     return Response(content=cache.body, media_type="application/json", headers=headers)
 
 
+def _moderate_payload(payload) -> None:
+    """Общая проверка публичных текстов и фигурки — для создания и правки."""
+    card = payload.card
+    for value in (
+        card.secret_wish,
+        card.teaser_tag,
+        card.author_display_name,
+        card.city,
+        card.totem_pet,
+        payload.snowglobe.engraving_text,
+        payload.snowglobe.custom_craft_title or "",
+    ):
+        ok_text, reason_text = verify_deep_text_safety(value)
+        if not ok_text:
+            raise HTTPException(status_code=422, detail=reason_text)
+    voxels_raw = [v.model_dump() for v in payload.snowglobe.voxels]
+    ok_vox, reason_vox = verify_voxel_topology_safety(voxels_raw)
+    if not ok_vox:
+        raise HTTPException(status_code=422, detail=reason_vox)
+
+
+def _as_utc(dt: datetime | None) -> datetime | None:
+    if dt is None:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _next_edit_at(gift: Gift) -> datetime | None:
+    last = _as_utc(gift.edited_at)
+    if last is None or config.GIFT_EDIT_COOLDOWN_DAYS == 0:
+        return None
+    return last + timedelta(days=config.GIFT_EDIT_COOLDOWN_DAYS)
+
+
+def _can_edit(gift: Gift) -> bool:
+    if is_new_year_unlocked():
+        return False
+    nxt = _next_edit_at(gift)
+    return nxt is None or datetime.now(timezone.utc) >= nxt
+
+
+async def _get_own_gift(session: AsyncSession, gift_id: str, session_hash: str) -> Gift:
+    gift = await session.get(Gift, gift_id)
+    if gift is None:
+        raise HTTPException(status_code=404, detail="Подарок не найден.")
+    author = await session.get(User, gift.author_id)
+    if author is None or author.session_fingerprint != session_hash:
+        raise HTTPException(status_code=403, detail="Менять шар может только его мастер.")
+    return gift
+
+
+def _my_gift_dto(gift: Gift) -> MyGiftDTO:
+    return MyGiftDTO(
+        id=gift.id,
+        snowglobe=gift.snowglobe or {},
+        packaging=gift.packaging or {},
+        melody=gift.melody or {},
+        card_preview=gift.card_preview or {},
+        secret_wish=gift.secret_wish or "",
+        candles_count=gift.candles_count,
+        edited_at=_as_utc(gift.edited_at),
+        can_edit=_can_edit(gift) and not gift.is_quarantined,
+        next_edit_at=_next_edit_at(gift),
+        edit_cooldown_days=config.GIFT_EDIT_COOLDOWN_DAYS,
+    )
+
+
+@router.get("/{gift_id}/mine", response_model=MyGiftDTO)
+async def get_my_gift(
+    gift_id: str,
+    response: Response,
+    session_hash: str = Depends(require_session_hash),
+    session: AsyncSession = Depends(get_db),
+):
+    response.headers["Cache-Control"] = "no-store"
+    gift = await _get_own_gift(session, gift_id, session_hash)
+    return _my_gift_dto(gift)
+
+
+@router.put("/{gift_id}", response_model=PublicShowcaseGiftDTO)
+async def update_gift(
+    gift_id: str,
+    payload: GiftUpdateRequest,
+    request: Request,
+    session_hash: str = Depends(require_session_hash),
+    session: AsyncSession = Depends(get_db),
+):
+    """Мастер переделывает свой шар: раз в GIFT_EDIT_COOLDOWN_DAYS дней и до полуночи
+    обмена. Свечи, место в очереди и участие в Кольце сохраняются."""
+    ratelimit.enforce(request, "gift_edit", limit=10, window_s=600, extra_key=session_hash)
+    gift = await _get_own_gift(session, gift_id, session_hash)
+    if gift.is_quarantined:
+        raise HTTPException(status_code=409, detail="Шар на проверке у модератора — править его пока нельзя.")
+    if is_new_year_unlocked():
+        raise HTTPException(status_code=409, detail="Обмен уже открыт — шары больше не меняются.")
+    nxt = _next_edit_at(gift)
+    if nxt is not None and datetime.now(timezone.utc) < nxt:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Шар можно переделывать раз в {config.GIFT_EDIT_COOLDOWN_DAYS} дн. "
+            f"Следующая правка — {nxt.astimezone(config.CANDLE_DAY_TZ):%d.%m в %H:%M} МСК.",
+        )
+
+    _moderate_payload(payload)
+    card = payload.card
+    snow_dict = payload.snowglobe.model_dump()
+    mel_dict = payload.melody.model_dump()
+    pack_dict = payload.packaging.model_dump()
+
+    gift.snowglobe = snow_dict
+    gift.packaging = pack_dict
+    gift.melody = mel_dict
+    gift.card_preview = {
+        "teaser_tag": card.teaser_tag,
+        "author_display_name": card.author_display_name,
+        "city": card.city,
+        "totem_pet": card.totem_pet,
+    }
+    gift.secret_wish = card.secret_wish
+    if card.contact_handle.strip():
+        if len(card.contact_handle.strip()) < 3:
+            raise HTTPException(status_code=422, detail="Контакт слишком короткий.")
+        contact_type, contact_value = normalize_contact(card.contact_handle)
+        gift.encrypted_contact = encrypt_contact(contact_value)
+        # Кольцо Чудес берёт контакт мастера из профиля — обновляем и его.
+        author = await session.get(User, gift.author_id)
+        if author is not None:
+            author.contact_type = contact_type
+            author.encrypted_contact = encrypt_contact(contact_value)
+    gift.genome_hash = compute_artifact_genome_hash(snow_dict, mel_dict)
+    gift.quality_score = calculate_gift_quality_score(
+        build_gift_payload(snow_dict, pack_dict, mel_dict, card.secret_wish), candles_count=gift.candles_count
+    )
+    gift.edited_at = datetime.now(timezone.utc)
+    await session.commit()
+    await session.refresh(gift)
+    invalidate_showcase()
+    rank = await _rank_of(session, gift)
+    return _to_dto(gift, rank)
+
+
 @router.post("", response_model=CreatedGiftDTO, status_code=status.HTTP_201_CREATED)
 async def create_gift(
     payload: GiftCreateRequest,
@@ -142,26 +285,7 @@ async def create_gift(
     ratelimit.enforce(request, "gift_create", limit=20, window_s=600, extra_key=session_hash)
 
     card = payload.card
-    ok_text, reason_text = verify_deep_text_safety(card.secret_wish)
-    if ok_text:
-        for value in (
-            card.teaser_tag,
-            card.author_display_name,
-            card.city,
-            card.totem_pet,
-            payload.snowglobe.engraving_text,
-            payload.snowglobe.custom_craft_title or "",
-        ):
-            ok_text, reason_text = verify_deep_text_safety(value)
-            if not ok_text:
-                break
-    if not ok_text:
-        raise HTTPException(status_code=422, detail=reason_text)
-
-    voxels_raw = [v.model_dump() for v in payload.snowglobe.voxels]
-    ok_vox, reason_vox = verify_voxel_topology_safety(voxels_raw)
-    if not ok_vox:
-        raise HTTPException(status_code=422, detail=reason_vox)
+    _moderate_payload(payload)
 
     contact_type, contact_value = normalize_contact(card.contact_handle)
     snow_dict = payload.snowglobe.model_dump()

@@ -51,6 +51,8 @@ class Gift(Base):
     is_matched: Mapped[bool] = mapped_column(Boolean, default=False)
     genome_hash: Mapped[str] = mapped_column(String(64), default="0x00000000")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    # Последнее редактирование автором (раз в GIFT_EDIT_COOLDOWN_DAYS дней).
+    edited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
 
     author: Mapped["User"] = relationship("User", lazy="selectin")
 

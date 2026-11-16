@@ -99,6 +99,8 @@ class MelodySchema(BaseModel):
     cello_track: list[int] = Field(default_factory=lambda: [0] * 16)
     flute_track: list[int] = Field(default_factory=lambda: [0] * 16)
     drum_track: list[int] = Field(default_factory=lambda: [0] * 16)
+    # Тембр каждой мелодической дорожки (по умолчанию — исходный инструмент).
+    voices: dict[str, str] = Field(default_factory=dict)
 
 
 class PublicCardPreviewSchema(BaseModel):
@@ -114,6 +116,12 @@ BaseMaterial = Literal["mahogany", "brass", "obsidian", "birch"]
 BoxShape = Literal["cube", "cylinder", "hex_prism", "pyramid_box"]
 PaperPattern = Literal["nordic_knit", "gold_stars", "velvet_red", "kraft_vintage", "emerald_frost"]
 WaxSeal = Literal["owl", "snowflake", "crown", "star", "compass"]
+TrackSlot = Literal["celesta", "harp", "cello", "flute"]
+VoiceId = Literal[
+    "celesta", "musicbox", "piano", "bells", "glock", "epiano",
+    "harp", "guitar", "strings", "violin", "cello", "bass",
+    "flute", "clarinet", "choir", "pad",
+]
 
 
 class VoxelBlockInput(BaseModel):
@@ -154,6 +162,7 @@ class MelodyInput(BaseModel):
     cello_track: Track = Field(default_factory=lambda: [0] * TRACK_STEPS)
     flute_track: Track = Field(default_factory=lambda: [0] * TRACK_STEPS)
     drum_track: Track = Field(default_factory=lambda: [0] * TRACK_STEPS)
+    voices: dict[TrackSlot, VoiceId] = Field(default_factory=dict)
 
 
 class GiftCardCreateSchema(BaseModel):
@@ -175,6 +184,36 @@ class GiftCreateRequest(BaseModel):
     packaging: PackagingInput
     melody: MelodyInput
     card: GiftCardCreateSchema
+
+
+class GiftCardUpdateSchema(GiftCardCreateSchema):
+    # Контакт при правке необязателен: пусто — остаётся прежний.
+    contact_handle: Annotated[SingleLine, Field(max_length=120)] = ""
+
+
+class GiftUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    snowglobe: SnowglobeInput
+    packaging: PackagingInput
+    melody: MelodyInput
+    card: GiftCardUpdateSchema
+
+
+class MyGiftDTO(BaseModel):
+    """Полный шар для его автора (с пожеланием) — чтобы открыть его в мастерской."""
+
+    id: str
+    snowglobe: dict
+    packaging: dict
+    melody: dict
+    card_preview: dict
+    secret_wish: str
+    candles_count: int
+    edited_at: datetime | None = None
+    can_edit: bool
+    next_edit_at: datetime | None = None
+    edit_cooldown_days: int
 
 
 class SpiralSlotCoordinates(BaseModel):
