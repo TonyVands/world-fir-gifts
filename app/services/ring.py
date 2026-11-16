@@ -7,6 +7,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.security import PROTECTED_PLACEHOLDER, crypto_service
 from app.models import ExchangeRingHandshake, Gift, User
 
 logger = logging.getLogger("uvicorn.error")
@@ -72,7 +73,7 @@ async def form_ring(session: AsyncSession, cycle_year: int = CYCLE_YEAR) -> tupl
 
     rows = (
         await session.execute(
-            select(Gift.author_id, Gift.id)
+            select(Gift.author_id, Gift.id, User.encrypted_contact)
             .join(User, User.id == Gift.author_id)
             .where(Gift.is_quarantined.is_(False), User.is_demo.is_(False))
             .order_by(Gift.sequence_number.asc())
@@ -80,8 +81,18 @@ async def form_ring(session: AsyncSession, cycle_year: int = CYCLE_YEAR) -> tupl
     ).all()
 
     user_gift_map: dict[str, str] = {}
-    for author_id, gift_id in rows:
-        user_gift_map.setdefault(author_id, gift_id)  # в Кольцо идёт первый шар мастера
+    skipped: set[str] = set()
+    for author_id, gift_id, encrypted_contact in rows:
+        if author_id in user_gift_map or author_id in skipped:
+            continue
+        # Мастер с нечитаемым контактом (утерян старый ключ) не сможет познакомиться
+        # с партнёром — в Кольцо его не берём, его шар остаётся украшением Ёлки.
+        if crypto_service.decrypt_contact(encrypted_contact or "") == PROTECTED_PLACEHOLDER:
+            skipped.add(author_id)
+            continue
+        user_gift_map[author_id] = gift_id  # в Кольцо идёт первый шар мастера
+    if skipped:
+        logger.warning("[Ring] Пропущено мастеров с нечитаемым контактом: %s", len(skipped))
 
     handshakes = await create_exchange_ring(session, user_gift_map, cycle_year)
     if handshakes:

@@ -232,3 +232,16 @@ async def test_receiver_marks_handshake_unpacked(client, db_session, locked, mon
     await client.get("/api/handshakes/my-ring", headers=masters[hs.giver_user_id])
     await db_session.refresh(hs)
     assert hs.is_unpacked is False
+
+
+async def test_unreadable_contact_excluded_from_ring(client, db_session, locked):
+    masters = await _create_masters(client, 3)
+    broken_id = next(iter(masters))
+    user = await db_session.get(User, broken_id)
+    user.encrypted_contact = "gAAAA-not-a-valid-token"  # как контакт под утерянным ключом
+    await db_session.commit()
+
+    result = await _match_ring(client)
+    assert result["participants"] == 2
+    handshakes = (await db_session.execute(select(ExchangeRingHandshake))).scalars().all()
+    assert broken_id not in {h.giver_user_id for h in handshakes} | {h.receiver_user_id for h in handshakes}
