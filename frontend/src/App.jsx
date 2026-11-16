@@ -1,0 +1,6050 @@
+import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import * as THREE from "three";
+import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
+import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
+import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
+import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
+import { computeDeterministicGenomeHash } from "./lib/genome.js";
+import { inspectVoxelGeometrySafety } from "./lib/voxelSafety.js";
+import { inspectContentSafety, normalizeForModeration } from "./lib/moderation.js";
+import {
+  connectTreeEvents,
+  createGift as apiCreateGift,
+  fetchGifts as apiFetchGifts,
+  fetchMyProfile as apiFetchMyProfile,
+  fetchMyRing as apiFetchMyRing,
+  fetchRingStatus as apiFetchRingStatus,
+  giftNodeFromDTO,
+  giveHandshakeConsent as apiGiveHandshakeConsent,
+  isNetworkError,
+  lightGiftCandle as apiLightGiftCandle,
+  loadLitGiftIds,
+  reportGift as apiReportGift,
+  saveLitGiftIds,
+} from "./api.js";
+
+// ============================================================================
+// 1. CONSTANTS, VOXEL BLUEPRINTS & ORCHESTRA SYNTHESIZER (v10.0 CRYSTAL ORBS)
+// ============================================================================
+const GOLDEN_ANGLE_RAD = Math.PI * (3.0 - Math.sqrt(5.0));
+const GIFTS_PER_TIER = 12;
+const MAX_INSTANCES = 500;
+const MAX_TOTAL_TREE_VOXELS = 18000;
+const VERTICAL_STEP_PER_GIFT = 0.42;
+// Нижняя граница полёта камеры: земля (снежное поле) на y=-2.7, камера остаётся выше
+const MAX_SCROLL_DEPTH = 57;
+// Жёсткий барьер высоты камеры (идея из v16.1): никогда не провалиться под землю
+const MIN_CAMERA_Y = -0.3;
+// Масштаб подарочных хрустальных шаров — дары должны читаться крупно на большой ёлке
+const GIFT_ORB_SCALE = 2.2;
+const UNLOCK_TARGET_MS = new Date("2026-12-31T23:59:59Z").getTime();
+
+// ============================================================================
+// 1.1. РОЖДЕСТВЕНСКИЕ ПРЕСЕТЫ ПОГОДЫ И АТМОСФЕРЫ (v14.0)
+// ============================================================================
+const CHRISTMAS_ATMOSPHERE_PRESETS = [
+  {
+    id: "christmas_night",
+    title: "🎅 Рождественская Ночь",
+    temp: "-14°C",
+    skyTop: "#040b1c",
+    skyBottom: "#141e38",
+    fogColor: "#081226",
+    hemiSky: "#93c5fd",
+    hemiGround: "#1e1b4b",
+    dirColor: "#fef08a",
+    dirIntensity: 2.4,
+    auroraStrength: 1.0,
+    windSpeed: 0.7,
+    fallSpeed: 1.0,
+    diamondSparkle: 0.4,
+    frostVignette: 0.22,
+  },
+  {
+    id: "fireplace_cozy",
+    title: "🕯 Уют у Камина",
+    temp: "-8°C",
+    skyTop: "#1a0c18",
+    skyBottom: "#361822",
+    fogColor: "#1f101a",
+    hemiSky: "#fde68a",
+    hemiGround: "#451a03",
+    dirColor: "#fbbf24",
+    dirIntensity: 2.8,
+    auroraStrength: 0.45,
+    windSpeed: 0.4,
+    fallSpeed: 0.75,
+    diamondSparkle: 0.65,
+    frostVignette: 0.1,
+  },
+  {
+    id: "fluffy_blizzard",
+    title: "❄️ Пушистый Снегопад",
+    temp: "-18°C",
+    skyTop: "#08182e",
+    skyBottom: "#1e3a5f",
+    fogColor: "#0f2442",
+    hemiSky: "#e0f2fe",
+    hemiGround: "#1e293b",
+    dirColor: "#f8fafc",
+    dirIntensity: 2.2,
+    auroraStrength: 0.85,
+    windSpeed: 1.55,
+    fallSpeed: 1.45,
+    diamondSparkle: 0.5,
+    frostVignette: 0.45,
+  },
+  {
+    id: "diamond_frost",
+    title: "💎 Алмазный Иней",
+    temp: "-32°C",
+    skyTop: "#020617",
+    skyBottom: "#0f172a",
+    fogColor: "#061024",
+    hemiSky: "#38bdf8",
+    hemiGround: "#090d16",
+    dirColor: "#e0f2fe",
+    dirIntensity: 2.6,
+    auroraStrength: 1.35,
+    windSpeed: 0.5,
+    fallSpeed: 0.85,
+    diamondSparkle: 1.0,
+    frostVignette: 0.65,
+  },
+  {
+    id: "frosty_dawn",
+    title: "🌅 Морозное Утро",
+    temp: "-21°C",
+    skyTop: "#1e1b4b",
+    skyBottom: "#be185d",
+    fogColor: "#311042",
+    hemiSky: "#fbcfe8",
+    hemiGround: "#1e1b4b",
+    dirColor: "#fde047",
+    dirIntensity: 2.9,
+    auroraStrength: 0.3,
+    windSpeed: 0.6,
+    fallSpeed: 0.95,
+    diamondSparkle: 0.8,
+    frostVignette: 0.3,
+  },
+];
+
+function createSnowflakeBokehTexture() {
+  const canvas = document.createElement("canvas");
+  canvas.width = 128;
+  canvas.height = 128;
+  const ctx = canvas.getContext("2d");
+
+  const grad = ctx.createRadialGradient(64, 64, 2, 64, 64, 60);
+  grad.addColorStop(0, "rgba(255, 255, 255, 1.0)");
+  grad.addColorStop(0.35, "rgba(240, 249, 255, 0.85)");
+  grad.addColorStop(0.7, "rgba(186, 230, 253, 0.32)");
+  grad.addColorStop(1, "rgba(255, 255, 255, 0.0)");
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.arc(64, 64, 60, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.95)";
+  ctx.lineWidth = 3.2;
+  ctx.lineCap = "round";
+  for (let i = 0; i < 6; i++) {
+    const angle = (i * Math.PI) / 3;
+    const x2 = 64 + Math.cos(angle) * 44;
+    const y2 = 64 + Math.sin(angle) * 44;
+    ctx.beginPath();
+    ctx.moveTo(64, 64);
+    ctx.lineTo(x2, y2);
+    ctx.stroke();
+
+    const bx = 64 + Math.cos(angle) * 26;
+    const by = 64 + Math.sin(angle) * 26;
+    for (const side of [-0.55, 0.55]) {
+      ctx.beginPath();
+      ctx.moveTo(bx, by);
+      ctx.lineTo(
+        bx + Math.cos(angle + side) * 12,
+        by + Math.sin(angle + side) * 12
+      );
+      ctx.stroke();
+    }
+  }
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.needsUpdate = true;
+  return texture;
+}
+
+function createRadialGlowTexture() {
+  const canvas = document.createElement("canvas");
+  canvas.width = 64;
+  canvas.height = 64;
+  const ctx = canvas.getContext("2d");
+  const grad = ctx.createRadialGradient(32, 32, 1, 32, 32, 30);
+  grad.addColorStop(0, "rgba(255, 250, 230, 1.0)");
+  grad.addColorStop(0.35, "rgba(255, 214, 130, 0.55)");
+  grad.addColorStop(1, "rgba(255, 190, 60, 0.0)");
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, 64, 64);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.needsUpdate = true;
+  return texture;
+}
+
+function createWhiteGlowTexture() {
+  const canvas = document.createElement("canvas");
+  canvas.width = 64;
+  canvas.height = 64;
+  const ctx = canvas.getContext("2d");
+  const grad = ctx.createRadialGradient(32, 32, 1, 32, 32, 30);
+  grad.addColorStop(0, "rgba(255, 255, 255, 0.9)");
+  grad.addColorStop(0.4, "rgba(255, 255, 255, 0.35)");
+  grad.addColorStop(1, "rgba(255, 255, 255, 0.0)");
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, 64, 64);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.needsUpdate = true;
+  return texture;
+}
+
+const DRUM_INSTRUMENTS = [
+  { index: 6, label: "✨ Треугольник", short: "Tri" },
+  { index: 5, label: "❄️ Шейкер инея", short: "Shk" },
+  { index: 4, label: "🔔 Бубенцы саней", short: "Bell" },
+  { index: 3, label: "🪵 Римшот (Щелчок)", short: "Rim" },
+  { index: 2, label: "🥁 Мягкий Малый", short: "Snr" },
+  { index: 1, label: "💓 Тёплая Бочка", short: "Kick" },
+  { index: 0, label: "— Пауза", short: "—" },
+];
+
+const DRUM_GROOVE_PRESETS = [
+  {
+    id: "sleigh_bells",
+    title: "🔔 Снежные бубенцы",
+    pattern: [1, 4, 5, 4, 2, 4, 5, 4, 1, 4, 5, 4, 2, 4, 6, 4],
+  },
+  {
+    id: "nutcracker_march",
+    title: "👑 Марш Щелкунчика",
+    pattern: [1, 0, 3, 3, 2, 0, 4, 0, 1, 1, 3, 0, 2, 3, 6, 0],
+  },
+  {
+    id: "lofi_hearth",
+    title: "🕯️ Lo-Fi Уют у камина",
+    pattern: [1, 5, 4, 5, 2, 5, 1, 4, 1, 5, 4, 5, 2, 5, 3, 6],
+  },
+  {
+    id: "crystal_waltz",
+    title: "❄️ Хрустальный вальс",
+    pattern: [1, 4, 4, 2, 4, 4, 1, 4, 4, 2, 6, 4, 1, 4, 4, 6],
+  },
+  {
+    id: "polar_pulse",
+    title: "💓 Полярный пульс",
+    pattern: [1, 5, 2, 5, 1, 1, 2, 4, 1, 5, 2, 5, 1, 3, 2, 6],
+  },
+];
+
+const NOTE_FREQUENCIES = {
+  0: 0,
+  1: 261.63,  // C4
+  2: 293.66,  // D4
+  3: 329.63,  // E4
+  4: 392.0,   // G4
+  5: 440.0,   // A4
+  6: 493.88,  // B4
+  7: 523.25,  // C5
+  8: 587.33,  // D5
+  9: 659.25,  // E5
+  10: 783.99, // G5
+  11: 880.0,  // A5
+  12: 987.77, // B5
+  13: 1046.5, // C6
+  14: 1174.66,// D6
+  15: 349.23, // F4 (Субдоминанта / Миксолидийский)
+  16: 369.99, // F#4 (Сказочный Лидийский IV#)
+  17: 415.3,  // G#4 (Зимний Гармонический минор VII#)
+  18: 698.46, // F5 (Верхняя субдоминанта)
+};
+
+const NOTE_META = [
+  { index: 14, label: "D6" },
+  { index: 13, label: "C6" },
+  { index: 12, label: "B5" },
+  { index: 11, label: "A5" },
+  { index: 10, label: "G5" },
+  { index: 18, label: "F5" },
+  { index: 9, label: "E5" },
+  { index: 8, label: "D5" },
+  { index: 7, label: "C5" },
+  { index: 6, label: "B4" },
+  { index: 5, label: "A4" },
+  { index: 17, label: "G#4" },
+  { index: 4, label: "G4" },
+  { index: 16, label: "F#4" },
+  { index: 15, label: "F4" },
+  { index: 3, label: "E4" },
+  { index: 2, label: "D4" },
+  { index: 1, label: "C4" },
+  { index: 0, label: "Пауза" },
+];
+
+const SCALE_MODES = [
+  {
+    id: "pentatonic",
+    title: "✨ Хрустальная Пентатоника",
+    badge: "Безошибочный",
+    mood: "Чистая волшебная шкатулка без резких полутонов — любые нажатые ноты звучат идеально",
+    notes: [1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 13, 14],
+  },
+  {
+    id: "c_major",
+    title: "☀️ Светлый Мажор (Ионийский)",
+    badge: "Радость и гимн",
+    mood: "Лучезарный, открытый праздничный строй новогоднего утра и солнечного инея",
+    notes: [1, 2, 3, 15, 4, 5, 6, 7, 8, 9, 18, 10, 11, 12, 13, 14],
+  },
+  {
+    id: "a_minor",
+    title: "🌙 Северный Минор (Эолийский)",
+    badge: "Зимняя лирика",
+    mood: "Глубокая арктическая сказка, полярная ночь и тёплый свет далёкого маяка",
+    notes: [3, 15, 4, 5, 6, 7, 8, 9, 18, 10, 11, 12, 13],
+  },
+  {
+    id: "dorian",
+    title: "❄️ Скандинавский Дорийский",
+    badge: "Северный эпос",
+    mood: "Старинный былинный лад северных мореплавателей со светлой VI ступенью надежды",
+    notes: [2, 3, 15, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14],
+  },
+  {
+    id: "lydian",
+    title: "🪄 Сказочный Лидийский (IV#)",
+    badge: "Магия кино",
+    mood: "Высокая IV# ступень (F#) создаёт ощущение чуда, полёта совы и звёздного волшебства",
+    notes: [1, 2, 3, 16, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
+  },
+  {
+    id: "harmonic_minor",
+    title: "👑 Зимний Гармонический (Щелкунчик)",
+    badge: "Классика Чайковского",
+    mood: "Утончённая барочная и классическая таинственность с острой вводной ступенью G#",
+    notes: [3, 15, 17, 5, 6, 7, 8, 9, 18, 11, 12, 13],
+  },
+  {
+    id: "mixolydian",
+    title: "🕯️ Полярный Миксолидийский",
+    badge: "Тёплый хоровод",
+    mood: "Уютный ярмарочный и балладный строй с мягкой низкой VII ступенью",
+    notes: [1, 2, 3, 15, 4, 5, 7, 8, 9, 18, 10, 11, 13, 14],
+  },
+  {
+    id: "phrygian",
+    title: "💎 Хрупкий Фригийский",
+    badge: "Ледяной кристалл",
+    mood: "Загадочное мерцание ледяных пещер и хрустальных граней на морозе",
+    notes: [3, 15, 4, 5, 6, 7, 9, 18, 10, 11, 12, 13],
+  },
+];
+
+// 12 секторов Квинто-Квартового Круга (по часовой стрелке — шаг в чистую квинту)
+const CIRCLE_OF_FIFTHS_SECTORS = [
+  {
+    idx: 0,
+    major: "C",
+    minor: "Am",
+    majorTitle: "До мажор (C)",
+    minorTitle: "Ля минор (Am)",
+    majorVoicing: { cello: 1, harp: [1, 3, 4, 7], flute: 9, celesta: [7, 9, 10, 13] },
+    minorVoicing: { cello: 5, harp: [5, 7, 9, 11], flute: 11, celesta: [11, 9, 7, 9] },
+  },
+  {
+    idx: 1,
+    major: "G",
+    minor: "Em",
+    majorTitle: "Соль мажор (G)",
+    minorTitle: "Ми минор (Em)",
+    majorVoicing: { cello: 4, harp: [4, 6, 8, 10], flute: 10, celesta: [10, 12, 14, 10] },
+    minorVoicing: { cello: 3, harp: [3, 4, 6, 9], flute: 9, celesta: [9, 10, 12, 9] },
+  },
+  {
+    idx: 2,
+    major: "D",
+    minor: "Bm",
+    majorTitle: "Ре мажор (D)",
+    minorTitle: "Си минор (Bm)",
+    majorVoicing: { cello: 2, harp: [2, 16, 5, 8], flute: 8, celesta: [8, 11, 14, 11] },
+    minorVoicing: { cello: 6, harp: [6, 8, 16, 12], flute: 12, celesta: [12, 8, 11, 8] },
+  },
+  {
+    idx: 3,
+    major: "A",
+    minor: "F#m",
+    majorTitle: "Ля мажор (A)",
+    minorTitle: "Фа# минор (F#m)",
+    majorVoicing: { cello: 5, harp: [5, 17, 9, 11], flute: 11, celesta: [11, 9, 13, 11] },
+    minorVoicing: { cello: 16, harp: [16, 5, 7, 11], flute: 11, celesta: [11, 7, 9, 11] },
+  },
+  {
+    idx: 4,
+    major: "E",
+    minor: "C#m",
+    majorTitle: "Ми мажор (E)",
+    minorTitle: "До# минор (C#m)",
+    majorVoicing: { cello: 3, harp: [3, 17, 6, 9], flute: 9, celesta: [9, 12, 17, 9] },
+    minorVoicing: { cello: 3, harp: [3, 4, 7, 9], flute: 9, celesta: [9, 7, 10, 9] },
+  },
+  {
+    idx: 5,
+    major: "B",
+    minor: "G#m",
+    majorTitle: "Си мажор (B)",
+    minorTitle: "Соль# минор (G#m)",
+    majorVoicing: { cello: 6, harp: [6, 16, 9, 12], flute: 12, celesta: [12, 9, 11, 12] },
+    minorVoicing: { cello: 17, harp: [17, 6, 9, 12], flute: 12, celesta: [12, 17, 9, 12] },
+  },
+  {
+    idx: 6,
+    major: "F#",
+    minor: "D#m",
+    majorTitle: "Фа# мажор (F#)",
+    minorTitle: "Ре# минор (D#m)",
+    majorVoicing: { cello: 16, harp: [16, 5, 17, 11], flute: 11, celesta: [16, 11, 13, 11] },
+    minorVoicing: { cello: 2, harp: [2, 16, 5, 8], flute: 8, celesta: [8, 16, 11, 8] },
+  },
+  {
+    idx: 7,
+    major: "Db",
+    minor: "Bbm",
+    majorTitle: "Реb мажор (Db)",
+    minorTitle: "Сиb минор (Bbm)",
+    majorVoicing: { cello: 1, harp: [1, 15, 17, 7], flute: 18, celesta: [7, 18, 10, 13] },
+    minorVoicing: { cello: 5, harp: [5, 7, 18, 11], flute: 18, celesta: [11, 18, 7, 11] },
+  },
+  {
+    idx: 8,
+    major: "Ab",
+    minor: "Fm",
+    majorTitle: "Ляb мажор (Ab)",
+    minorTitle: "Фа минор (Fm)",
+    majorVoicing: { cello: 17, harp: [17, 7, 8, 13], flute: 13, celesta: [17, 7, 13, 10] },
+    minorVoicing: { cello: 15, harp: [15, 17, 7, 18], flute: 18, celesta: [18, 7, 17, 7] },
+  },
+  {
+    idx: 9,
+    major: "Eb",
+    minor: "Cm",
+    majorTitle: "Миb мажор (Eb)",
+    minorTitle: "До минор (Cm)",
+    majorVoicing: { cello: 2, harp: [2, 4, 5, 8], flute: 10, celesta: [8, 10, 11, 14] },
+    minorVoicing: { cello: 1, harp: [1, 2, 4, 7], flute: 10, celesta: [7, 10, 8, 7] },
+  },
+  {
+    idx: 10,
+    major: "Bb",
+    minor: "Gm",
+    majorTitle: "Сиb мажор (Bb)",
+    minorTitle: "Соль минор (Gm)",
+    majorVoicing: { cello: 5, harp: [5, 2, 15, 8], flute: 8, celesta: [8, 18, 11, 14] },
+    minorVoicing: { cello: 4, harp: [4, 5, 8, 10], flute: 10, celesta: [10, 8, 18, 10] },
+  },
+  {
+    idx: 11,
+    major: "F",
+    minor: "Dm",
+    majorTitle: "Фа мажор (F)",
+    minorTitle: "Ре минор (Dm)",
+    majorVoicing: { cello: 15, harp: [15, 5, 7, 18], flute: 18, celesta: [18, 11, 13, 18] },
+    minorVoicing: { cello: 2, harp: [2, 15, 5, 8], flute: 18, celesta: [8, 18, 11, 8] },
+  },
+];
+
+// Обучающие формулы великих композиторов на Квинто-Квартовом круге
+const GUIDED_CIRCLE_PROGRESSIONS = [
+  {
+    id: "canon_light",
+    title: "🌟 Канон Света (I → V → vi → IV)",
+    formula: "Тоника (Дом) → Доминанта (Взлёт) → Параллельный минор (Душа) → Субдоминанта (Тепло)",
+    steps: [
+      { sectorIdx: 0, ring: "major", role: "I (Тоника)" },
+      { sectorIdx: 1, ring: "major", role: "V (Доминанта)" },
+      { sectorIdx: 0, ring: "minor", role: "vi (Паралл. минор)" },
+      { sectorIdx: 11, ring: "major", role: "IV (Субдоминанта)" },
+    ],
+  },
+  {
+    id: "northern_ballad",
+    title: "❄️ Северная Баллада (vi → IV → I → V)",
+    formula: "Начинается с лирического минора и раскрывается в широком мажорном припеве",
+    steps: [
+      { sectorIdx: 0, ring: "minor", role: "vi (Минорный зачин)" },
+      { sectorIdx: 11, ring: "major", role: "IV (Субдоминанта)" },
+      { sectorIdx: 0, ring: "major", role: "I (Светлая Тоника)" },
+      { sectorIdx: 1, ring: "major", role: "V (Доминанта)" },
+    ],
+  },
+  {
+    id: "classical_cadence",
+    title: "👑 Классический Каданс (I → IV → V → I)",
+    formula: "Фундамент европейской классики: шаг против часовой (S), шаг по часовой (D) и возврат домой (T)",
+    steps: [
+      { sectorIdx: 0, ring: "major", role: "I (Тоника)" },
+      { sectorIdx: 11, ring: "major", role: "IV (Квартовый шаг S)" },
+      { sectorIdx: 1, ring: "major", role: "V (Квинтовый шаг D)" },
+      { sectorIdx: 0, ring: "major", role: "I (Разрешение в Дом)" },
+    ],
+  },
+  {
+    id: "fairytale_turn",
+    title: "🪄 Сказочный Оборот (IV → V → iii → vi)",
+    formula: "Любимая прогрессия японских и зимних анимационных сказок — плавное скольжение по кругу",
+    steps: [
+      { sectorIdx: 11, ring: "major", role: "IV (Мечта)" },
+      { sectorIdx: 1, ring: "major", role: "V (Взлёт)" },
+      { sectorIdx: 1, ring: "minor", role: "iii (Тайна)" },
+      { sectorIdx: 0, ring: "minor", role: "vi (Уютное эхо)" },
+    ],
+  },
+];
+
+export function quantizeTrackToScale(track, scaleId) {
+  const scaleObj = SCALE_MODES.find((s) => s.id === scaleId) || SCALE_MODES[0];
+  const allowed = scaleObj.notes;
+  return normalizeTrackTo16Steps(track).map((noteIdx) => {
+    if (!noteIdx || noteIdx <= 0) return 0;
+    if (allowed.includes(noteIdx)) return noteIdx;
+    const targetFreq = NOTE_FREQUENCIES[noteIdx] || 440;
+    let bestNote = allowed[0];
+    let minDiff = Infinity;
+    for (const candidate of allowed) {
+      const diff = Math.abs((NOTE_FREQUENCIES[candidate] || 440) - targetFreq);
+      if (diff < minDiff) {
+        minDiff = diff;
+        bestNote = candidate;
+      }
+    }
+    return bestNote;
+  });
+}
+
+function build16StepTracksFrom4Bars(barSlots, currentDrums = null) {
+  const celesta = Array(16).fill(0);
+  const harp = Array(16).fill(0);
+  const cello = Array(16).fill(0);
+  const flute = Array(16).fill(0);
+  const drums =
+    currentDrums && currentDrums.some((d) => d > 0)
+      ? normalizeTrackTo16Steps(currentDrums)
+      : [...DRUM_GROOVE_PRESETS[0].pattern];
+
+  barSlots.forEach((slot, barIdx) => {
+    const sector =
+      CIRCLE_OF_FIFTHS_SECTORS[slot.sectorIdx % 12] ||
+      CIRCLE_OF_FIFTHS_SECTORS[0];
+    const voicing =
+      slot.ring === "minor" ? sector.minorVoicing : sector.majorVoicing;
+    const offset = barIdx * 4;
+
+    cello[offset] = voicing.cello;
+    cello[offset + 2] = barIdx === 3 ? voicing.cello : 0;
+
+    for (let i = 0; i < 4; i++) {
+      harp[offset + i] = voicing.harp[i % voicing.harp.length];
+      celesta[offset + i] =
+        i === 3 && barIdx === 3
+          ? voicing.celesta[0]
+          : voicing.celesta[i % voicing.celesta.length];
+    }
+
+    flute[offset + 1] = voicing.flute;
+    flute[offset + 3] = barIdx % 2 === 0 ? voicing.flute : 0;
+  });
+
+  return { celesta, harp, cello, flute, drums };
+}
+
+const ORCHESTRA_INSTRUMENTS = [
+  {
+    id: "celesta",
+    title: "🔔 Челеста",
+    subtitle: "Колокольчики",
+    colorClass: "bg-amber-400 border-amber-200 text-slate-950",
+  },
+  {
+    id: "harp",
+    title: "🪕 Арфа",
+    subtitle: "Щипковый перебор",
+    colorClass: "bg-sky-400 border-sky-200 text-slate-950",
+  },
+  {
+    id: "cello",
+    title: "🎻 Виолончель",
+    subtitle: "Бархатный смычок",
+    colorClass: "bg-rose-500 border-rose-200 text-white",
+  },
+  {
+    id: "flute",
+    title: "🪈 Флейта",
+    subtitle: "Деревянное соло",
+    colorClass: "bg-emerald-400 border-emerald-200 text-slate-950",
+  },
+  {
+    id: "drums",
+    title: "🥁 Барабаны",
+    subtitle: "Ритм и бубенцы",
+    colorClass: "bg-purple-400 border-purple-200 text-slate-950",
+  },
+];
+
+function normalizeTrackTo16Steps(track = []) {
+  if (!Array.isArray(track) || track.length === 0) {
+    return Array(16).fill(0);
+  }
+  if (track.length >= 16) {
+    return track.slice(0, 16);
+  }
+  if (track.length === 8) {
+    return [...track, ...track];
+  }
+  const padded = [...track];
+  while (padded.length < 16) {
+    padded.push(track[padded.length % track.length] || 0);
+  }
+  return padded;
+}
+
+const VOXEL_PALETTE = [
+  { id: "gold", name: "Золото", hex: "#fbbf24", emissive: true },
+  { id: "ruby", name: "Рубин", hex: "#e11d48", emissive: false },
+  { id: "pine", name: "Хвоя", hex: "#059669", emissive: false },
+  { id: "snow", name: "Снег", hex: "#f8fafc", emissive: false },
+  { id: "ice", name: "Сияющий лёд", hex: "#38bdf8", emissive: true },
+  { id: "wood", name: "Кедр", hex: "#92400e", emissive: false },
+  { id: "amber", name: "Янтарь", hex: "#f97316", emissive: true },
+  { id: "amethyst", name: "Аметист", hex: "#a855f7", emissive: true },
+  { id: "obsidian", name: "Обсидиан", hex: "#1e293b", emissive: false },
+];
+
+function buildVoxelPreset(presetId) {
+  const blocks = [];
+  const add = (x, y, z, color) => blocks.push({ x, y, z, color });
+
+  if (presetId === "pine_tree") {
+    for (let y = 0; y < 2; y++) {
+      add(3, y, 3, "#92400e");
+      add(4, y, 3, "#92400e");
+      add(3, y, 4, "#92400e");
+      add(4, y, 4, "#92400e");
+    }
+    for (let x = 1; x <= 6; x++)
+      for (let z = 1; z <= 6; z++) add(x, 2, z, "#059669");
+    for (let x = 2; x <= 5; x++)
+      for (let z = 2; z <= 5; z++) {
+        add(x, 3, z, "#059669");
+        add(x, 4, z, "#10b981");
+      }
+    for (let x = 3; x <= 4; x++)
+      for (let z = 3; z <= 4; z++) {
+        add(x, 5, z, "#10b981");
+        add(x, 6, z, "#f8fafc");
+      }
+    add(3, 7, 3, "#fbbf24");
+    add(4, 7, 4, "#fbbf24");
+    add(1, 2, 1, "#e11d48");
+    add(6, 2, 6, "#fbbf24");
+    add(2, 4, 5, "#38bdf8");
+  } else if (presetId === "snowman") {
+    for (let x = 2; x <= 5; x++)
+      for (let z = 2; z <= 5; z++) {
+        add(x, 0, z, "#f8fafc");
+        add(x, 1, z, "#f8fafc");
+        add(x, 2, z, "#f8fafc");
+      }
+    for (let x = 2; x <= 5; x++)
+      for (let z = 2; z <= 5; z++) add(x, 3, z, "#e11d48");
+    for (let x = 3; x <= 4; x++)
+      for (let z = 3; z <= 4; z++) {
+        add(x, 4, z, "#f8fafc");
+        add(x, 5, z, "#f8fafc");
+      }
+    add(3, 4, 5, "#f97316");
+    add(3, 5, 5, "#1e293b");
+    add(4, 5, 5, "#1e293b");
+    for (let x = 2; x <= 5; x++)
+      for (let z = 2; z <= 5; z++) add(x, 6, z, "#1e293b");
+    add(3, 7, 3, "#fbbf24");
+    add(4, 7, 4, "#fbbf24");
+  } else if (presetId === "train") {
+    for (let z = 1; z <= 6; z++) {
+      add(2, 0, z, "#1e293b");
+      add(5, 0, z, "#1e293b");
+      for (let x = 2; x <= 5; x++) add(x, 1, z, "#e11d48");
+    }
+    for (let x = 2; x <= 5; x++)
+      for (let y = 2; y <= 4; y++) {
+        add(x, y, 1, "#fbbf24");
+        add(x, y, 2, "#fbbf24");
+      }
+    for (let x = 3; x <= 4; x++)
+      for (let z = 3; z <= 6; z++) {
+        add(x, 2, z, "#1e293b");
+        add(x, 3, z, "#1e293b");
+      }
+    add(3, 4, 5, "#fbbf24");
+    add(3, 5, 5, "#f8fafc");
+    add(3, 6, 4, "#f8fafc");
+    add(4, 7, 3, "#38bdf8");
+  } else if (presetId === "star_heart") {
+    const coords = [
+      [3, 1, 3], [4, 1, 3],
+      [2, 2, 3], [3, 2, 3], [4, 2, 3], [5, 2, 3],
+      [1, 3, 3], [2, 3, 3], [3, 3, 3], [4, 3, 3], [5, 3, 3], [6, 3, 3],
+      [1, 4, 3], [2, 4, 3], [3, 4, 3], [4, 4, 3], [5, 4, 3], [6, 4, 3],
+      [2, 5, 3], [3, 5, 3], [4, 5, 3], [5, 5, 3],
+      [2, 6, 3], [5, 6, 3],
+    ];
+    coords.forEach(([x, y, z]) => {
+      add(x, y, z, "#e11d48");
+      add(x, y, z + 1, "#fbbf24");
+    });
+    add(3, 3, 2, "#38bdf8");
+    add(4, 4, 5, "#38bdf8");
+  } else {
+    for (let x = 1; x <= 6; x++)
+      for (let z = 1; z <= 6; z++) add(x, 0, z, "#f8fafc");
+    for (let y = 1; y <= 3; y++) {
+      for (let x = 2; x <= 5; x++)
+        for (let z = 2; z <= 5; z++) {
+          const isWindow =
+            y === 2 && (x === 2 || x === 5 || z === 2 || z === 5);
+          add(x, y, z, isWindow ? "#fbbf24" : "#92400e");
+        }
+    }
+    for (let x = 1; x <= 6; x++)
+      for (let z = 1; z <= 6; z++) add(x, 4, z, "#e11d48");
+    for (let x = 2; x <= 5; x++)
+      for (let z = 2; z <= 5; z++) add(x, 5, z, "#f8fafc");
+    for (let x = 3; x <= 4; x++)
+      for (let z = 3; z <= 4; z++) add(x, 6, z, "#f8fafc");
+    add(5, 5, 5, "#92400e");
+    add(5, 6, 5, "#92400e");
+    add(5, 7, 5, "#38bdf8");
+  }
+  return blocks;
+}
+
+const VOXEL_BLUEPRINTS = [
+  { id: "cottage", title: "🏡 Лесной терем", blocks: buildVoxelPreset("cottage") },
+  { id: "pine_tree", title: "🎄 Ёлка с игрушками", blocks: buildVoxelPreset("pine_tree") },
+  { id: "snowman", title: "⛄ Снеговик в шляпе", blocks: buildVoxelPreset("snowman") },
+  { id: "train", title: "🚂 Полярный экспресс", blocks: buildVoxelPreset("train") },
+  { id: "star_heart", title: "💖 Рубиновое сердце", blocks: buildVoxelPreset("star_heart") },
+];
+
+// ============================================================================
+// 1.2. DEEP 18+ CENSORSHIP ENGINE (3D VOXEL TOPOLOGY + TEXT NSFW GUARD)
+// ============================================================================
+// Правила и алгоритмы модерации вынесены в src/lib (общие с бэкендом,
+// см. app/services/moderation.py). Реэкспорт — для тестов и обратной совместимости.
+export { inspectVoxelGeometrySafety, inspectContentSafety, normalizeForModeration };
+
+const BOX_SHAPES = [
+  { id: "cube", title: "Классическая сфера", badge: "🔮" },
+  { id: "cylinder", title: "Высокий купол", badge: "🏛️" },
+  { id: "hex_prism", title: "Гранёный хрусталь", badge: "💎" },
+  { id: "pyramid_box", title: "Звёздный фонарь", badge: "✨" },
+];
+
+const WAX_SEALS = [
+  { id: "owl", title: "Полярная сова", symbol: "🦉" },
+  { id: "snowflake", title: "Снежинка", symbol: "❄️" },
+  { id: "crown", title: "Корона", symbol: "👑" },
+  { id: "star", title: "Путеводная звезда", symbol: "✦" },
+  { id: "compass", title: "Роза ветров", symbol: "🧭" },
+];
+
+const WAX_SEAL_MAP = Object.fromEntries(WAX_SEALS.map((w) => [w.id, w]));
+
+const BASE_MATERIALS = [
+  { id: "mahogany", title: "Красное дерево", color: "#5c2409" },
+  { id: "brass", title: "Старинная латунь", color: "#b45309" },
+  { id: "obsidian", title: "Звёздный обсидиан", color: "#1e293b" },
+  { id: "birch", title: "Карельская берёза", color: "#d6d3d1" },
+];
+
+const BASE_MAT_COLOR_MAP = Object.fromEntries(
+  BASE_MATERIALS.map((m) => [m.id, m.color])
+);
+
+const WISH_INSPIRATION_PROMPTS = [
+  {
+    label: "🤲 Тепло человеческих рук",
+    text: "В мире, где так много машин и алгоритмов, я собрал этот снежный шар для тебя вручную — кубик за кубиком, нота за нотой. Пусть в новом году вокруг тебя всегда будет живое человеческое участие и настоящее тепло!",
+  },
+  {
+    label: "🧭 Напутствие Навигатора",
+    text: "Приветствую тебя, добрый друг! Посылаю тебе этот хрустальный шар с авторской миниатюрой как путеводный маяк сквозь зимние метели.",
+  },
+];
+
+export function computeAntiSybilScoreDetails({
+  wishText = "",
+  wishCharCount = 0,
+  uniqueWordCount = 0,
+  celestaTrack = [],
+  harpTrack = [],
+  celloTrack = [],
+  fluteTrack = [],
+  drumTrack = [],
+  voxelsCount = 24,
+  engravingText = "",
+  candlesCount = 0,
+}) {
+  const effectiveLen = wishText ? wishText.trim().length : wishCharCount;
+  const effectiveWords = wishText
+    ? new Set(wishText.trim().toLowerCase().split(/\s+/).filter(Boolean)).size
+    : uniqueWordCount || Math.max(8, Math.floor(effectiveLen / 7));
+
+  const wishScore = Math.min(effectiveLen / 12.0 + effectiveWords * 0.8, 45.0);
+  const allTracks = [
+    ...celestaTrack,
+    ...harpTrack,
+    ...celloTrack,
+    ...fluteTrack,
+    ...drumTrack,
+  ];
+  const activeNotes = allTracks.filter((n) => n > 0).length;
+  const uniquePitches = new Set(allTracks.filter((n) => n > 0)).size;
+  const melodyScore = Math.min(activeNotes * 0.8 + uniquePitches * 1.8, 30.0);
+
+  const craftScore = Math.min(
+    (engravingText || "").trim().length * 0.2 + Math.min(voxelsCount * 0.15, 6.0),
+    10.0
+  );
+  const candlesBonus = Math.min(Math.log2(candlesCount + 1) * 5.0, 15.0);
+
+  const total = Number(
+    (wishScore + melodyScore + craftScore + candlesBonus).toFixed(1)
+  );
+
+  let echelon = {
+    id: "crystal",
+    title: "Хрустальный Эшелон",
+    label: "❄️ Хрустальный Эшелон (<45)",
+    colorClass: "bg-sky-950/80 text-sky-300 border-sky-400/40",
+  };
+  if (total >= 75) {
+    echelon = {
+      id: "gold",
+      title: "Золотой Мастер",
+      label: "🏆 Золотой Эшелон (75–100)",
+      colorClass: "bg-amber-500/20 text-amber-300 border-amber-400/50",
+    };
+  } else if (total >= 45) {
+    echelon = {
+      id: "silver",
+      title: "Серебряный Резонанс",
+      label: "🥈 Серебряный Эшелон (45–74)",
+      colorClass: "bg-emerald-950/80 text-emerald-300 border-emerald-400/40",
+    };
+  }
+
+  return {
+    wishScore: Number(wishScore.toFixed(1)),
+    melodyScore: Number(melodyScore.toFixed(1)),
+    craftScore: Number(craftScore.toFixed(1)),
+    candlesBonus: Number(candlesBonus.toFixed(1)),
+    total,
+    echelon,
+  };
+}
+
+// ============================================================================
+// 1.5. NFT RELIC GENOME HASH & STANDALONE 3D HTML CAPSULE GENERATOR
+// (канонический sha256-хэш общим модулем: src/lib/genome.js — паритет с бэкендом)
+// ============================================================================
+
+function buildNftRelicMetadata(gift, recipientCity = null) {
+  const genomeHash = gift?.genome_hash || computeDeterministicGenomeHash(gift);
+  const seq = gift?.coordinates?.sequence_number ?? 0;
+  const tier = gift?.coordinates?.tier_index ?? 0;
+  const voxels = gift?.snowglobe?.voxels || [];
+  const uniqueColors = new Set(voxels.map((v) => v.color)).size;
+
+  const scoreDetails = computeAntiSybilScoreDetails({
+    wishCharCount: gift?.wish_char_count || 180,
+    celestaTrack: gift?.melody?.celesta_track || [],
+    harpTrack: gift?.melody?.harp_track || [],
+    celloTrack: gift?.melody?.cello_track || [],
+    fluteTrack: gift?.melody?.flute_track || [],
+    voxelsCount: voxels.length,
+    engravingText: gift?.snowglobe?.engraving_text || "",
+    candlesCount: gift?.candles_count || 0,
+  });
+
+  const activeInstruments = [];
+  if ((gift?.melody?.celesta_track || []).some((n) => n > 0))
+    activeInstruments.push("Челеста");
+  if ((gift?.melody?.harp_track || []).some((n) => n > 0))
+    activeInstruments.push("Концертная Арфа");
+  if ((gift?.melody?.cello_track || []).some((n) => n > 0))
+    activeInstruments.push("Виолончель");
+  if ((gift?.melody?.flute_track || []).some((n) => n > 0))
+    activeInstruments.push("Северная Флейта");
+  if ((gift?.melody?.drum_track || []).some((n) => n > 0))
+    activeInstruments.push("Барабаны и бубенцы");
+
+  const baseMatObj =
+    BASE_MATERIALS.find((b) => b.id === gift?.snowglobe?.base_material) ||
+    BASE_MATERIALS[0];
+  const sealObj =
+    WAX_SEAL_MAP[gift?.packaging?.wax_seal_stamp] || WAX_SEALS[0];
+
+  const tokenId = `WFG2026-${String(seq).padStart(4, "0")}-${genomeHash
+    .slice(2, 8)
+    .toUpperCase()}`;
+
+  return {
+    standard: "ERC-721 / TON TEP-62 Soulbound Relic (World Fir Gifts 1/1)",
+    token_id: tokenId,
+    genome_sha256: genomeHash,
+    name: `Хрустальный Шар #${seq} • ${gift?.card_preview?.teaser_tag || "Дар Севера"}`,
+    description: `Ручная работа человека на Всемирной ёлке подарков (World Fir Gifts 2026). Гравировка на подиуме: «${
+      gift?.snowglobe?.engraving_text || "Свет 2026"
+    }». Автор: ${gift?.card_preview?.author_display_name || "Хранитель"} (г. ${
+      gift?.card_preview?.city || "Мирный"
+    })${recipientCity ? ` ⇄ Получатель в г. ${recipientCity}` : ""}.`,
+    external_url: "https://world-fir-gifts.amvera.io",
+    soulbound: true,
+    human_crafted: true,
+    edition: "1 of 1 (Hand-Crafted Voxel & 5-Track Audio Artifact)",
+    attributes: [
+      { trait_type: "Эшелон Света", value: scoreDetails.echelon.title },
+      { trait_type: "Индекс Тепла (LightScore)", value: scoreDetails.total },
+      { trait_type: "Ярус Спирали Фибоначчи", value: tier },
+      { trait_type: "Слот на Мировой Ёлке", value: `#${seq}` },
+      { trait_type: "Уложено 3D-вокселей", value: voxels.length },
+      { trait_type: "Палитра минералов", value: `${uniqueColors} оттенков` },
+      { trait_type: "Материал подиума", value: baseMatObj.title },
+      {
+        trait_type: "Оркестр шкатулки",
+        value: activeInstruments.join(", ") || "Челеста",
+      },
+      {
+        trait_type: "Темп симфонии",
+        value: `${gift?.melody?.tempo_bpm || 104} BPM`,
+      },
+      { trait_type: "Сургучная печать", value: sealObj.title },
+      { trait_type: "Свечей Ожидания", value: gift?.candles_count || 0 },
+    ],
+    onchain_genome: {
+      voxels,
+      base_material: gift?.snowglobe?.base_material || "mahogany",
+      base_color_hex: baseMatObj.color,
+      glitter_color: gift?.snowglobe?.glitter_color || "#fde047",
+      engraving_text: gift?.snowglobe?.engraving_text || "Свет 2026",
+      melody: gift?.melody,
+    },
+  };
+}
+
+// Пользовательские строки (бирка, имя, город) попадают в скачиваемый HTML —
+// экранируем, чтобы «<script>» в бирке не исполнился у получателя файла.
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function generateStandalone3DCapsuleHtml(nftMeta) {
+  // JSON внутри <script>: экранируем «<» и разделители строк, чтобы нельзя было закрыть тег.
+  const genomeJson = JSON.stringify(nftMeta)
+    .replace(/</g, "\\u003c")
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029");
+  return `<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>${escapeHtml(nftMeta.name)} — Вечная 3D-Капсула Ручной Работы (${escapeHtml(nftMeta.token_id)})</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: radial-gradient(circle at 50% 25%, #0f172a 0%, #030712 100%);
+      color: #f8fafc;
+      font-family: system-ui, -apple-system, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .card {
+      max-width: 560px;
+      width: 100%;
+      background: rgba(9, 18, 36, 0.92);
+      border: 1px solid rgba(251, 191, 36, 0.45);
+      border-radius: 24px;
+      padding: 24px;
+      box-shadow: 0 0 60px rgba(245, 158, 11, 0.18);
+      text-align: center;
+    }
+    .badge {
+      display: inline-block;
+      font-size: 11px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: #fbbf24;
+      background: rgba(251, 191, 36, 0.12);
+      border: 1px solid rgba(251, 191, 36, 0.35);
+      padding: 4px 12px;
+      border-radius: 999px;
+      margin-bottom: 10px;
+    }
+    h1 { font-size: 22px; color: #fef3c7; margin-bottom: 6px; }
+    .desc { font-size: 13px; color: #94a3b8; line-height: 1.5; margin-bottom: 16px; }
+    #canvas-wrap {
+      width: 300px;
+      height: 300px;
+      margin: 0 auto 14px;
+      border-radius: 20px;
+      border: 1px solid rgba(251, 191, 36, 0.3);
+      background: radial-gradient(circle, #0b1528 0%, #040812 100%);
+      cursor: grab;
+      overflow: hidden;
+    }
+    .hash {
+      font-family: monospace;
+      font-size: 11px;
+      color: #38bdf8;
+      background: #020617;
+      padding: 8px 10px;
+      border-radius: 10px;
+      word-break: break-all;
+      margin-bottom: 14px;
+      border: 1px solid #1e293b;
+    }
+    .btn {
+      background: linear-gradient(90deg, #fbbf24, #f59e0b);
+      color: #020617;
+      border: none;
+      font-weight: 700;
+      padding: 12px 20px;
+      border-radius: 14px;
+      cursor: pointer;
+      font-size: 13px;
+      width: 100%;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 8px;
+      margin-top: 16px;
+      text-align: left;
+    }
+    .trait {
+      background: rgba(15, 23, 42, 0.75);
+      border: 1px solid rgba(148, 163, 184, 0.2);
+      border-radius: 10px;
+      padding: 8px 10px;
+    }
+    .trait-k { font-size: 10px; color: #94a3b8; text-transform: uppercase; }
+    .trait-v { font-size: 12px; color: #fef08a; font-weight: 700; margin-top: 2px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="badge">🤲 Ручная Работа Человека • ${escapeHtml(nftMeta.token_id)}</div>
+    <h1>${escapeHtml(nftMeta.name)}</h1>
+    <p class="desc">${escapeHtml(nftMeta.description)}</p>
+    <div id="canvas-wrap" title="Крутите 3D-шар мышью"></div>
+    <div class="hash">GENOME SHA-256: ${escapeHtml(nftMeta.genome_sha256)}</div>
+    <button class="btn" id="play-btn">🎻 Прослушать 4-голосную симфонию шкатулки</button>
+    <div class="grid" id="traits"></div>
+  </div>
+  <script>
+    const META = ${genomeJson};
+    const traitsEl = document.getElementById("traits");
+    META.attributes.slice(0, 8).forEach(a => {
+      const d = document.createElement("div");
+      d.className = "trait";
+      const k = document.createElement("div");
+      k.className = "trait-k";
+      k.textContent = String(a.trait_type);
+      const v = document.createElement("div");
+      v.className = "trait-v";
+      v.textContent = String(a.value);
+      d.append(k, v);
+      traitsEl.appendChild(d);
+    });
+
+    const wrap = document.getElementById("canvas-wrap");
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 100);
+    camera.position.set(0, 1.8, 12.2);
+    camera.lookAt(0, -0.3, 0);
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setSize(300, 300);
+    wrap.appendChild(renderer.domElement);
+
+    scene.add(new THREE.AmbientLight("#ffffff", 1.5));
+    const dl = new THREE.DirectionalLight("#fef08a", 2.2);
+    dl.position.set(8, 14, 10);
+    scene.add(dl);
+
+    const root = new THREE.Group();
+    scene.add(root);
+
+    const baseMesh = new THREE.Mesh(
+      new THREE.CylinderGeometry(3.4, 3.85, 1.4, 32),
+      new THREE.MeshStandardMaterial({ color: META.onchain_genome.base_color_hex || "#451a03", roughness: 0.4, metalness: 0.35 })
+    );
+    baseMesh.position.y = -3.1;
+    root.add(baseMesh);
+
+    const vSize = 0.52;
+    const bGeo = new THREE.BoxGeometry(vSize * 0.96, vSize * 0.96, vSize * 0.96);
+    (META.onchain_genome.voxels || []).forEach(v => {
+      const m = new THREE.Mesh(bGeo, new THREE.MeshStandardMaterial({ color: v.color, roughness: 0.3 }));
+      m.position.set((v.x - 3.5) * vSize, -2.05 + v.y * vSize, (v.z - 3.5) * vSize);
+      root.add(m);
+    });
+
+    const dome = new THREE.Mesh(
+      new THREE.SphereGeometry(3.65, 32, 24),
+      new THREE.MeshPhongMaterial({ color: "#e0f2fe", transparent: true, opacity: 0.22, shininess: 120 })
+    );
+    dome.position.y = 0.45;
+    root.add(dome);
+
+    let drag = false, px = 0, py = 0, ry = 0.5, rx = 0.12;
+    wrap.onmousedown = e => { drag = true; px = e.clientX; py = e.clientY; };
+    window.onmousemove = e => {
+      if (!drag) return;
+      ry += (e.clientX - px) * 0.015;
+      rx = Math.max(-0.45, Math.min(0.6, rx + (e.clientY - py) * 0.01));
+      px = e.clientX; py = e.clientY;
+    };
+    window.onmouseup = () => drag = false;
+
+    function loop() {
+      requestAnimationFrame(loop);
+      if (!drag) ry += 0.008;
+      root.rotation.y = ry;
+      root.rotation.x = rx;
+      renderer.render(scene, camera);
+    }
+    loop();
+
+    const FREQS = {0:0,1:261.63,2:293.66,3:329.63,4:392,5:440,6:493.88,7:523.25,8:587.33,9:659.25,10:783.99,11:880,12:987.77,13:1046.5,14:1174.66,15:349.23,16:369.99,17:415.3,18:698.46};
+    document.getElementById("play-btn").onclick = () => {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      const ctx = new AudioCtx();
+      const mel = META.onchain_genome.melody || {};
+      const cTrack = mel.celesta_track || [];
+      const stepsCount = cTrack.length || 8;
+      const stepSec = 60 / (mel.tempo_bpm || 104) / 2;
+      const now = ctx.currentTime + 0.05;
+      for (let s = 0; s < stepsCount; s++) {
+        const t = now + s * stepSec;
+        [["celesta_track", "sine", 1], ["harp_track", "triangle", 0.5], ["cello_track", "sawtooth", 0.5], ["flute_track", "sine", 1.5]].forEach(([k, type, mult]) => {
+          const n = (mel[k] || [])[s] || 0;
+          if (n > 0 && FREQS[n]) {
+            const osc = ctx.createOscillator();
+            const g = ctx.createGain();
+            osc.type = type;
+            osc.frequency.setValueAtTime(FREQS[n] * mult, t);
+            g.gain.setValueAtTime(0.001, t);
+            g.gain.linearRampToValueAtTime(0.14, t + 0.03);
+            g.gain.exponentialRampToValueAtTime(0.001, t + stepSec * 1.4);
+            osc.connect(g); g.connect(ctx.destination);
+            osc.start(t); osc.stop(t + stepSec * 1.5);
+          }
+        });
+      }
+    };
+  </script>
+</body>
+</html>`;
+}
+
+function triggerBrowserFileDownload(filename, contentStr, mimeType) {
+  const blob = new Blob([contentStr], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function harmonizeOrchestraFromWish(wishText, scaleId = "pentatonic") {
+  const clean = (wishText || "Свет сквозь снега").trim();
+  const scaleObj =
+    SCALE_MODES.find((s) => s.id === scaleId) || SCALE_MODES[0];
+  const highScale = scaleObj.notes.filter((n) => n >= 7);
+  const lowScale = scaleObj.notes.filter((n) => n <= 8);
+  const effHigh = highScale.length > 0 ? highScale : [7, 8, 9, 10, 11, 13];
+  const effLow = lowScale.length > 0 ? lowScale : [1, 2, 3, 4, 5, 7];
+
+  const celesta = [];
+  const harp = [];
+  const cello = [];
+  const flute = [];
+  let sumCode = 0;
+
+  for (let step = 0; step < 16; step++) {
+    const charA = clean.charCodeAt((step * 5) % clean.length) || 70;
+    const charB = clean.charCodeAt((step * 11 + 3) % clean.length) || 40;
+    sumCode += charA + charB;
+
+    celesta.push(
+      step % 4 === 3 && step > 10
+        ? 0
+        : effHigh[(charA + step) % effHigh.length]
+    );
+    harp.push(
+      step % 2 === 0
+        ? effLow[(charB + step) % effLow.length]
+        : effLow[charA % effLow.length]
+    );
+    cello.push(step % 4 === 0 ? effLow[charA % Math.min(4, effLow.length)] : 0);
+    flute.push(
+      step % 2 === 1 ? effHigh[(charB + step + 2) % effHigh.length] : 0
+    );
+  }
+  const groove =
+    DRUM_GROOVE_PRESETS[sumCode % DRUM_GROOVE_PRESETS.length].pattern;
+  return {
+    tempo: 96 + (sumCode % 36),
+    celesta,
+    harp,
+    cello,
+    flute,
+    drums: [...groove],
+  };
+}
+
+function generateTrackPatternByRole(roleInstrument, scaleId = "pentatonic") {
+  if (roleInstrument === "drums") {
+    const randomGroove =
+      DRUM_GROOVE_PRESETS[
+        Math.floor(Math.random() * DRUM_GROOVE_PRESETS.length)
+      ];
+    return [...randomGroove.pattern];
+  }
+  const scaleObj =
+    SCALE_MODES.find((s) => s.id === scaleId) || SCALE_MODES[0];
+  const notes = scaleObj.notes;
+  const high = notes.filter((n) => n >= 7);
+  const low = notes.filter((n) => n <= 7);
+  const result = [];
+
+  for (let s = 0; s < 16; s++) {
+    if (roleInstrument === "celesta") {
+      result.push(
+        s % 8 === 7 ? 0 : high[(s * 2 + (s % 3)) % high.length] || 10
+      );
+    } else if (roleInstrument === "harp") {
+      const arpIdx = [0, 1, 2, 3, 2, 1, 0, 2][s % 8];
+      result.push(low[arpIdx % low.length] || 4);
+    } else if (roleInstrument === "cello") {
+      result.push(s % 4 === 0 ? low[(s / 4) % low.length] || 1 : 0);
+    } else {
+      result.push(
+        s % 2 === 1 ? high[(s + 3) % high.length] || 9 : 0
+      );
+    }
+  }
+  return result;
+}
+
+function getConeEnvelopeRadius(yHeight) {
+  const clampedY = Math.max(0, yHeight);
+  return 1.85 + clampedY * 0.24 + 0.35 * Math.sqrt(clampedY);
+}
+
+export function computeFibonacciSpiralSlot(sequenceNumber) {
+  const tierIndex = Math.floor(sequenceNumber / GIFTS_PER_TIER);
+  const branchAngleRad = (sequenceNumber * GOLDEN_ANGLE_RAD) % (2.0 * Math.PI);
+  const yHeight = Number((sequenceNumber * VERTICAL_STEP_PER_GIFT).toFixed(4));
+  // Кромка листвы яруса и подвес подарочных шаров СНАРУЖИ — за кончиками лап
+  const foliageEdge = getConeEnvelopeRadius(yHeight + 1.2) * 0.88;
+  const tierWave = 0.24 * Math.sin(sequenceNumber * 0.7);
+  const radiusOffset = Number((foliageEdge + 3.3 + tierWave).toFixed(4));
+
+  return {
+    sequence_number: sequenceNumber,
+    tier_index: tierIndex,
+    branch_angle_rad: Number(branchAngleRad.toFixed(6)),
+    radius_offset: radiusOffset,
+    y_height: yHeight,
+  };
+}
+
+const MELODY_PRESETS = [
+  {
+    name: "✨ Северное Сияние",
+    genre: "Ambient Symphonic",
+    tempo: 104,
+    celesta: [7, 9, 10, 13, 12, 10, 9, 7, 8, 10, 11, 14, 13, 10, 9, 7],
+    harp: [1, 4, 5, 7, 5, 4, 3, 1, 2, 4, 5, 8, 7, 5, 4, 1],
+    cello: [1, 0, 0, 0, 4, 0, 0, 0, 2, 0, 0, 0, 5, 0, 1, 0],
+    flute: [0, 10, 0, 13, 0, 12, 0, 9, 0, 11, 0, 14, 0, 13, 10, 0],
+    drums: [1, 4, 5, 4, 2, 4, 5, 4, 1, 4, 5, 4, 2, 4, 6, 4],
+  },
+  {
+    name: "🩰 Танец Феи Драже",
+    genre: "Классика Чайковского",
+    tempo: 118,
+    celesta: [13, 12, 13, 11, 10, 9, 8, 7, 10, 9, 10, 8, 7, 6, 7, 0],
+    harp: [1, 0, 4, 0, 5, 0, 4, 0, 3, 0, 5, 0, 4, 0, 1, 0],
+    cello: [1, 0, 0, 0, 5, 0, 0, 0, 3, 0, 0, 0, 4, 0, 1, 0],
+    flute: [0, 0, 13, 0, 0, 0, 10, 0, 0, 0, 11, 0, 9, 0, 7, 0],
+    drums: [1, 0, 3, 3, 2, 0, 4, 0, 1, 1, 3, 0, 2, 3, 6, 0],
+  },
+  {
+    name: "🚂 Полярный Экспресс",
+    genre: "Кинематографический драйв",
+    tempo: 126,
+    celesta: [7, 7, 10, 7, 11, 10, 9, 7, 8, 8, 11, 8, 13, 11, 10, 7],
+    harp: [1, 4, 1, 4, 5, 7, 5, 4, 2, 5, 2, 5, 4, 7, 4, 1],
+    cello: [1, 0, 4, 0, 5, 0, 4, 0, 2, 0, 5, 0, 4, 0, 1, 0],
+    flute: [0, 9, 10, 0, 13, 0, 10, 0, 0, 11, 13, 0, 14, 0, 13, 0],
+    drums: [1, 5, 2, 5, 1, 1, 2, 4, 1, 5, 2, 5, 1, 3, 2, 6],
+  },
+  {
+    name: "🦉 Зимняя Колыбельная",
+    genre: "Уютный Lo-Fi Вальс",
+    tempo: 84,
+    celesta: [5, 7, 8, 10, 8, 7, 5, 3, 7, 8, 10, 11, 10, 8, 7, 5],
+    harp: [1, 3, 5, 0, 4, 5, 7, 0, 3, 5, 7, 0, 2, 4, 1, 0],
+    cello: [1, 0, 0, 0, 4, 0, 0, 0, 3, 0, 0, 0, 2, 0, 1, 0],
+    flute: [0, 8, 0, 10, 0, 9, 0, 7, 0, 10, 0, 11, 0, 9, 7, 0],
+    drums: [1, 5, 4, 5, 2, 5, 1, 4, 1, 5, 4, 5, 2, 5, 3, 6],
+  },
+  {
+    name: "❄️ Хрустальный Вальс",
+    genre: "Вальс цветов и льда",
+    tempo: 112,
+    celesta: [7, 0, 10, 12, 13, 0, 12, 10, 11, 0, 9, 7, 8, 0, 7, 0],
+    harp: [1, 4, 4, 1, 5, 7, 7, 5, 4, 6, 6, 4, 1, 4, 4, 1],
+    cello: [1, 0, 0, 5, 0, 0, 4, 0, 0, 2, 0, 0, 1, 0, 0, 0],
+    flute: [0, 10, 12, 0, 13, 14, 12, 0, 11, 9, 0, 7, 8, 9, 7, 0],
+    drums: [1, 4, 4, 2, 4, 4, 1, 4, 4, 2, 6, 4, 1, 4, 4, 6],
+  },
+  {
+    name: "🌟 Звёздный Хорал",
+    genre: "Торжественный гимн",
+    tempo: 92,
+    celesta: [7, 8, 9, 10, 11, 10, 9, 13, 12, 11, 10, 9, 8, 9, 7, 7],
+    harp: [1, 2, 3, 4, 5, 4, 3, 7, 6, 5, 4, 3, 2, 4, 1, 1],
+    cello: [1, 0, 3, 0, 4, 0, 7, 0, 5, 0, 4, 0, 2, 0, 1, 0],
+    flute: [7, 0, 9, 0, 11, 0, 13, 0, 12, 0, 10, 0, 8, 0, 7, 0],
+    drums: [1, 0, 4, 0, 2, 0, 4, 0, 1, 0, 4, 0, 2, 0, 6, 0],
+  },
+  {
+    name: "⚓ Огни Мурманска",
+    genre: "Полярная романтика",
+    tempo: 98,
+    celesta: [9, 11, 13, 11, 9, 7, 5, 7, 8, 10, 12, 10, 9, 7, 5, 0],
+    harp: [3, 5, 7, 9, 7, 5, 3, 5, 2, 4, 6, 8, 5, 7, 3, 0],
+    cello: [3, 0, 0, 0, 5, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0],
+    flute: [0, 13, 0, 11, 0, 9, 0, 7, 0, 12, 0, 10, 0, 9, 0, 0],
+    drums: [1, 5, 4, 5, 2, 5, 1, 4, 1, 5, 4, 5, 2, 5, 3, 6],
+  },
+  {
+    name: "🌲 Таёжная Сказка",
+    genre: "Эпический фолк",
+    tempo: 110,
+    celesta: [10, 9, 7, 5, 7, 9, 10, 13, 14, 13, 10, 9, 7, 8, 7, 0],
+    harp: [4, 1, 4, 5, 4, 1, 4, 7, 5, 2, 5, 7, 4, 2, 1, 0],
+    cello: [4, 0, 1, 0, 4, 0, 7, 0, 5, 0, 2, 0, 4, 0, 1, 0],
+    flute: [10, 0, 7, 0, 9, 0, 13, 0, 14, 0, 10, 0, 9, 0, 7, 0],
+    drums: [1, 4, 5, 4, 2, 4, 5, 4, 1, 4, 5, 4, 2, 4, 6, 4],
+  },
+];
+
+const TOTEM_PETS = ["Полярная сова", "Северный лис", "Таёжная рысь", "Белый медведь"];
+
+function generateProceduralGifts(count = 144) {
+  const shapes = BOX_SHAPES.map((b) => b.id);
+  const seals = WAX_SEALS.map((w) => w.id);
+  const ribbons = ["#fbbf24", "#fef08a", "#38bdf8", "#f43f5e", "#34d399"];
+  const cities = ["Мирный", "Архангельск", "Санкт-Петербург", "Ярославль", "Уфа", "Мурманск", "Казань"];
+  const names = ["Мастер Илья", "Анна (Ручная лепка)", "Тимур", "Елена", "Дмитрий", "София", "Артём"];
+  const list = [];
+
+  for (let seq = 0; seq < count; seq++) {
+    const preset = MELODY_PRESETS[seq % MELODY_PRESETS.length];
+    const blueprint = VOXEL_BLUEPRINTS[seq % VOXEL_BLUEPRINTS.length];
+
+    const wishLen = 150 + ((seq * 31) % 250);
+    const candles = seq % 4 === 0 ? 0 : (seq * 2) % 9;
+    const engrave = "Ручная работа • 2026";
+
+    const scoreObj = computeAntiSybilScoreDetails({
+      wishCharCount: wishLen,
+      celestaTrack: preset.celesta,
+      harpTrack: preset.harp,
+      celloTrack: preset.cello,
+      fluteTrack: preset.flute,
+      voxelsCount: blueprint.blocks.length,
+      engravingText: engrave,
+      candlesCount: candles,
+    });
+
+    list.push({
+      id: `gift-node-${seq}`,
+      author_id: `user-${seq}`,
+      created_order: seq,
+      offline: true,
+      quality_score: scoreObj.total,
+      coordinates: computeFibonacciSpiralSlot(seq),
+      snowglobe: {
+        sculpture_id: blueprint.id,
+        voxels: blueprint.blocks,
+        base_material: BASE_MATERIALS[seq % BASE_MATERIALS.length].id,
+        glitter_color: ["#fde047", "#38bdf8", "#f472b6", "#34d399"][seq % 4],
+        custom_craft_title: blueprint.title,
+        engraving_text: engrave,
+      },
+      packaging: {
+        box_shape: shapes[seq % shapes.length],
+        paper_pattern: "nordic_knit",
+        ribbon_color: ribbons[seq % ribbons.length],
+        wax_seal_stamp: seals[seq % seals.length],
+      },
+      melody: {
+        tempo_bpm: preset.tempo,
+        celesta_track: [...preset.celesta],
+        harp_track: [...preset.harp],
+        cello_track: [...preset.cello],
+        flute_track: [...preset.flute],
+        drum_track: [...(preset.drums || DRUM_GROOVE_PRESETS[0].pattern)],
+      },
+      card_preview: {
+        teaser_tag: `${blueprint.title} • Шар #${seq + 1}`,
+        author_display_name: `${names[seq % names.length]}`,
+        city: cities[seq % cities.length],
+        totem_pet: TOTEM_PETS[seq % TOTEM_PETS.length],
+      },
+      secret_wish:
+        "В мире, переполненном машинами, я собрал этот снежный шар для тебя вручную — кубик за кубиком. Пусть в новом году дома ждёт живое тепло и уют!",
+      wish_char_count: wishLen,
+      candles_count: candles,
+    });
+  }
+
+  list.sort(
+    (a, b) =>
+      b.quality_score - a.quality_score || a.created_order - b.created_order
+  );
+  list.forEach((gift, sortedSeq) => {
+    gift.coordinates = computeFibonacciSpiralSlot(sortedSeq);
+  });
+  return list;
+}
+
+// ============================================================================
+// 2. ZERO-OVERLAP 5-VOICE CHAMBER ORCHESTRA & DRUMS DAW ENGINE (v12.0)
+// ============================================================================
+class ChamberOrchestraSynth {
+  constructor() {
+    this.ctx = null;
+    this.sessionMasterGain = null;
+    this.activeOscillators = new Set();
+    this.timers = [];
+    this.activePlayingId = null;
+    this.isLooping = false;
+    this.trackConfig = {
+      celesta: { muted: false, solo: false, volume: 0.9 },
+      harp: { muted: false, solo: false, volume: 0.85 },
+      cello: { muted: false, solo: false, volume: 0.85 },
+      flute: { muted: false, solo: false, volume: 0.85 },
+      drums: { muted: false, solo: false, volume: 0.85 },
+    };
+    this.listeners = new Set();
+  }
+
+  subscribe(fn) {
+    this.listeners.add(fn);
+    return () => this.listeners.delete(fn);
+  }
+
+  notify(step = null) {
+    const state = {
+      playingId: this.activePlayingId,
+      step,
+      isPlaying: Boolean(this.activePlayingId),
+      isLooping: this.isLooping,
+    };
+    this.listeners.forEach((fn) => fn(state));
+  }
+
+  setTrackMix(instId, patch) {
+    if (!this.trackConfig[instId]) return;
+    this.trackConfig[instId] = { ...this.trackConfig[instId], ...patch };
+  }
+
+  setLooping(loopFlag) {
+    this.isLooping = Boolean(loopFlag);
+    this.notify(null);
+  }
+
+  init() {
+    if (!this.ctx) {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (AudioCtx) this.ctx = new AudioCtx();
+    }
+    if (this.ctx && this.ctx.state === "suspended") {
+      this.ctx.resume();
+    }
+  }
+
+  stop() {
+    this.timers.forEach((t) => window.clearTimeout(t));
+    this.timers = [];
+
+    if (this.ctx && this.sessionMasterGain) {
+      const oldBus = this.sessionMasterGain;
+      this.sessionMasterGain = null;
+      try {
+        const now = this.ctx.currentTime;
+        oldBus.gain.cancelScheduledValues(now);
+        oldBus.gain.setValueAtTime(Math.max(0.0001, oldBus.gain.value), now);
+        oldBus.gain.exponentialRampToValueAtTime(0.0001, now + 0.015);
+        window.setTimeout(() => {
+          try {
+            oldBus.disconnect();
+          } catch {}
+        }, 25);
+      } catch {
+        try {
+          oldBus.disconnect();
+        } catch {}
+      }
+    }
+
+    this.activeOscillators.forEach((osc) => {
+      try {
+        osc.stop();
+        osc.disconnect();
+      } catch {}
+    });
+    this.activeOscillators.clear();
+    this.activePlayingId = null;
+    this.notify(null);
+  }
+
+  createFreshSessionBus() {
+    this.init();
+    if (!this.ctx) return null;
+    const bus = this.ctx.createGain();
+    bus.gain.setValueAtTime(1.0, this.ctx.currentTime);
+    bus.connect(this.ctx.destination);
+    this.sessionMasterGain = bus;
+    return bus;
+  }
+
+  isInstrumentAudible(instrument) {
+    const anySolo = Object.values(this.trackConfig).some((cfg) => cfg.solo);
+    const cfg = this.trackConfig[instrument] || {
+      muted: false,
+      solo: false,
+      volume: 0.85,
+    };
+    if (anySolo) return cfg.solo;
+    return !cfg.muted;
+  }
+
+  registerOsc(osc) {
+    this.activeOscillators.add(osc);
+    osc.onended = () => {
+      this.activeOscillators.delete(osc);
+    };
+  }
+
+  triggerDrumHit(drumIdx, startTime, targetBus = null) {
+    if (!this.ctx || drumIdx <= 0) return;
+    if (!this.isInstrumentAudible("drums")) return;
+    const destination =
+      targetBus || this.sessionMasterGain || this.ctx.destination;
+    const vol = this.trackConfig.drums?.volume ?? 0.85;
+
+    if (drumIdx === 1) {
+      // 1: Warm Kick (Тёплая Бочка)
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(130, startTime);
+      osc.frequency.exponentialRampToValueAtTime(34, startTime + 0.14);
+      gain.gain.setValueAtTime(0.36 * vol, startTime);
+      gain.gain.exponentialRampToValueAtTime(0.0008, startTime + 0.22);
+      osc.connect(gain);
+      gain.connect(destination);
+      this.registerOsc(osc);
+      osc.start(startTime);
+      osc.stop(startTime + 0.24);
+    } else if (drumIdx === 2 || drumIdx === 5) {
+      // 2: Brush Snare (Мягкий Малый) или 5: Frost Shaker (Шейкер инея)
+      const dur = drumIdx === 2 ? 0.14 : 0.065;
+      const bufSize = Math.floor(this.ctx.sampleRate * dur);
+      const buffer = this.ctx.createBuffer(1, bufSize, this.ctx.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < bufSize; i++) data[i] = Math.random() * 2 - 1;
+      const noise = this.ctx.createBufferSource();
+      noise.buffer = buffer;
+      const filter = this.ctx.createBiquadFilter();
+      filter.type = drumIdx === 2 ? "bandpass" : "highpass";
+      filter.frequency.setValueAtTime(drumIdx === 2 ? 1850 : 5400, startTime);
+      const gain = this.ctx.createGain();
+      gain.gain.setValueAtTime((drumIdx === 2 ? 0.2 : 0.11) * vol, startTime);
+      gain.gain.exponentialRampToValueAtTime(0.0008, startTime + dur);
+      noise.connect(filter);
+      filter.connect(gain);
+      gain.connect(destination);
+      this.registerOsc(noise);
+      noise.start(startTime);
+    } else if (drumIdx === 3) {
+      // 3: Wood Rimshot (Щелчок)
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = "triangle";
+      osc.frequency.setValueAtTime(840, startTime);
+      osc.frequency.exponentialRampToValueAtTime(280, startTime + 0.045);
+      gain.gain.setValueAtTime(0.22 * vol, startTime);
+      gain.gain.exponentialRampToValueAtTime(0.0008, startTime + 0.055);
+      osc.connect(gain);
+      gain.connect(destination);
+      this.registerOsc(osc);
+      osc.start(startTime);
+      osc.stop(startTime + 0.06);
+    } else if (drumIdx === 4 || drumIdx === 6) {
+      // 4: Sleigh Bells (Бубенцы саней) или 6: Crystal Triangle (Треугольник)
+      const partials =
+        drumIdx === 4 ? [2650, 3480, 4920] : [3120, 6240];
+      const decay = drumIdx === 6 ? 0.42 : 0.15;
+      partials.forEach((f) => {
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(f, startTime);
+        gain.gain.setValueAtTime(0.065 * vol, startTime);
+        gain.gain.exponentialRampToValueAtTime(0.0008, startTime + decay);
+        osc.connect(gain);
+        gain.connect(destination);
+        this.registerOsc(osc);
+        osc.start(startTime);
+        osc.stop(startTime + decay + 0.02);
+      });
+    }
+  }
+
+  triggerVoice(instrument, freq, startTime, duration, targetBus = null) {
+    if (!this.ctx || freq <= 0) return;
+    if (!this.isInstrumentAudible(instrument)) return;
+
+    const destination = targetBus || this.sessionMasterGain || this.ctx.destination;
+    const vol = this.trackConfig[instrument]?.volume ?? 0.85;
+
+    if (instrument === "celesta") {
+      const osc = this.ctx.createOscillator();
+      const overtone = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      const overGain = this.ctx.createGain();
+
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(freq, startTime);
+      overtone.type = "sine";
+      overtone.frequency.setValueAtTime(freq * 3.0, startTime);
+
+      overGain.gain.setValueAtTime(0.08 * vol, startTime);
+      overGain.gain.exponentialRampToValueAtTime(
+        0.0008,
+        startTime + duration * 0.4
+      );
+
+      gain.gain.setValueAtTime(0.0008, startTime);
+      gain.gain.linearRampToValueAtTime(0.18 * vol, startTime + 0.015);
+      gain.gain.exponentialRampToValueAtTime(
+        0.0008,
+        startTime + duration * 1.35
+      );
+
+      osc.connect(gain);
+      overtone.connect(overGain);
+      overGain.connect(gain);
+      gain.connect(destination);
+
+      this.registerOsc(osc);
+      this.registerOsc(overtone);
+      osc.start(startTime);
+      overtone.start(startTime);
+      osc.stop(startTime + duration * 1.45);
+      overtone.stop(startTime + duration * 1.45);
+    } else if (instrument === "harp") {
+      const osc = this.ctx.createOscillator();
+      const filter = this.ctx.createBiquadFilter();
+      const gain = this.ctx.createGain();
+
+      osc.type = "triangle";
+      osc.frequency.setValueAtTime(freq * 0.5, startTime);
+
+      filter.type = "lowpass";
+      filter.frequency.setValueAtTime(freq * 3.0, startTime);
+      filter.frequency.exponentialRampToValueAtTime(
+        freq * 0.7,
+        startTime + duration
+      );
+
+      gain.gain.setValueAtTime(0.0008, startTime);
+      gain.gain.linearRampToValueAtTime(0.22 * vol, startTime + 0.02);
+      gain.gain.exponentialRampToValueAtTime(
+        0.0008,
+        startTime + duration * 1.55
+      );
+
+      osc.connect(filter);
+      filter.connect(gain);
+      gain.connect(destination);
+
+      this.registerOsc(osc);
+      osc.start(startTime);
+      osc.stop(startTime + duration * 1.65);
+    } else if (instrument === "cello") {
+      const osc = this.ctx.createOscillator();
+      const vibrato = this.ctx.createOscillator();
+      const vibratoGain = this.ctx.createGain();
+      const filter = this.ctx.createBiquadFilter();
+      const gain = this.ctx.createGain();
+
+      osc.type = "sawtooth";
+      osc.frequency.setValueAtTime(freq * 0.5, startTime);
+
+      vibrato.frequency.setValueAtTime(5.2, startTime);
+      vibratoGain.gain.setValueAtTime(2.5, startTime);
+      vibrato.connect(vibratoGain);
+      vibratoGain.connect(osc.frequency);
+
+      filter.type = "lowpass";
+      filter.frequency.setValueAtTime(freq * 1.8, startTime);
+
+      gain.gain.setValueAtTime(0.0008, startTime);
+      gain.gain.linearRampToValueAtTime(0.16 * vol, startTime + 0.09);
+      gain.gain.exponentialRampToValueAtTime(
+        0.0008,
+        startTime + duration * 1.9
+      );
+
+      osc.connect(filter);
+      filter.connect(gain);
+      gain.connect(destination);
+
+      this.registerOsc(osc);
+      this.registerOsc(vibrato);
+      osc.start(startTime);
+      vibrato.start(startTime);
+      osc.stop(startTime + duration * 2.0);
+      vibrato.stop(startTime + duration * 2.0);
+    } else if (instrument === "flute") {
+      const osc = this.ctx.createOscillator();
+      const vibrato = this.ctx.createOscillator();
+      const vibratoGain = this.ctx.createGain();
+      const gain = this.ctx.createGain();
+
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(freq * 1.5, startTime);
+
+      vibrato.frequency.setValueAtTime(6.0, startTime);
+      vibratoGain.gain.setValueAtTime(4.0, startTime);
+      vibrato.connect(vibratoGain);
+      vibratoGain.connect(osc.frequency);
+
+      gain.gain.setValueAtTime(0.0008, startTime);
+      gain.gain.linearRampToValueAtTime(0.15 * vol, startTime + 0.06);
+      gain.gain.exponentialRampToValueAtTime(
+        0.0008,
+        startTime + duration * 1.4
+      );
+
+      osc.connect(gain);
+      gain.connect(destination);
+
+      this.registerOsc(osc);
+      this.registerOsc(vibrato);
+      osc.start(startTime);
+      vibrato.start(startTime);
+      osc.stop(startTime + duration * 1.5);
+      vibrato.stop(startTime + duration * 1.5);
+    }
+  }
+
+  playSingleNote(instr, noteIdx) {
+    this.init();
+    if (!this.ctx || noteIdx <= 0) return;
+    if (instr === "drums") {
+      this.triggerDrumHit(
+        noteIdx,
+        this.ctx.currentTime + 0.01,
+        this.ctx.destination
+      );
+      return;
+    }
+    const freq = NOTE_FREQUENCIES[noteIdx] || 440;
+    this.triggerVoice(
+      instr,
+      freq,
+      this.ctx.currentTime + 0.01,
+      0.38,
+      this.ctx.destination
+    );
+  }
+
+  toggleMelody(
+    playbackId,
+    tempoBpm,
+    celestaTrack = [],
+    harpTrack = [],
+    celloTrack = [],
+    fluteTrack = [],
+    drumTrack = [],
+    onStepCallback = null
+  ) {
+    if (this.activePlayingId === playbackId) {
+      this.stop();
+      if (onStepCallback) onStepCallback(null);
+      return false;
+    }
+    this.playMelody(
+      tempoBpm,
+      celestaTrack,
+      harpTrack,
+      celloTrack,
+      fluteTrack,
+      drumTrack,
+      onStepCallback,
+      playbackId
+    );
+    return true;
+  }
+
+  playMelody(
+    tempoBpm,
+    celestaTrack = [],
+    harpTrack = [],
+    celloTrack = [],
+    fluteTrack = [],
+    drumTrack = [],
+    onStepCallback = null,
+    playbackId = "studio-preview"
+  ) {
+    this.stop();
+    const bus = this.createFreshSessionBus();
+    if (!this.ctx || !bus) return;
+
+    this.activePlayingId = playbackId;
+    const c16 = normalizeTrackTo16Steps(celestaTrack);
+    const h16 = normalizeTrackTo16Steps(harpTrack);
+    const v16 = normalizeTrackTo16Steps(celloTrack);
+    const f16 = normalizeTrackTo16Steps(fluteTrack);
+    const d16 = normalizeTrackTo16Steps(drumTrack);
+
+    const totalSteps = 16;
+    const stepSec = 60 / (tempoBpm || 104) / 2;
+    const now = this.ctx.currentTime + 0.04;
+
+    for (let step = 0; step < totalSteps; step++) {
+      const t = now + step * stepSec;
+      const cNote = c16[step] || 0;
+      const hNote = h16[step] || 0;
+      const vNote = v16[step] || 0;
+      const fNote = f16[step] || 0;
+      const dHit = d16[step] || 0;
+
+      if (cNote > 0)
+        this.triggerVoice("celesta", NOTE_FREQUENCIES[cNote], t, stepSec, bus);
+      if (hNote > 0)
+        this.triggerVoice("harp", NOTE_FREQUENCIES[hNote], t, stepSec, bus);
+      if (vNote > 0)
+        this.triggerVoice(
+          "cello",
+          NOTE_FREQUENCIES[vNote],
+          t,
+          stepSec * 1.4,
+          bus
+        );
+      if (fNote > 0)
+        this.triggerVoice(
+          "flute",
+          NOTE_FREQUENCIES[fNote],
+          t,
+          stepSec * 1.1,
+          bus
+        );
+      if (dHit > 0) this.triggerDrumHit(dHit, t, bus);
+
+      const tid = window.setTimeout(() => {
+        if (this.activePlayingId !== playbackId) return;
+        this.notify(step);
+        if (onStepCallback) onStepCallback(step);
+      }, step * stepSec * 1000);
+      this.timers.push(tid);
+    }
+
+    const totalDurationMs = totalSteps * stepSec * 1000 + 70;
+    const endTid = window.setTimeout(() => {
+      if (this.activePlayingId !== playbackId) return;
+      if (this.isLooping) {
+        this.playMelody(
+          tempoBpm,
+          c16,
+          h16,
+          v16,
+          f16,
+          d16,
+          onStepCallback,
+          playbackId
+        );
+      } else {
+        this.activePlayingId = null;
+        this.notify(null);
+        if (onStepCallback) onStepCallback(null);
+      }
+    }, totalDurationMs);
+    this.timers.push(endTid);
+  }
+
+  playOwlChime() {
+    this.init();
+    if (!this.ctx) return;
+    const now = this.ctx.currentTime + 0.02;
+    [523.25, 659.25, 783.99, 1046.5, 1174.66].forEach((f, idx) => {
+      this.triggerVoice(
+        "celesta",
+        f,
+        now + idx * 0.1,
+        0.55,
+        this.ctx.destination
+      );
+    });
+  }
+
+  toggleCozyHearthAmbient(enable) {
+    this.init();
+    if (!this.ctx) return false;
+    if (this.hearthInterval) {
+      window.clearInterval(this.hearthInterval);
+      this.hearthInterval = null;
+    }
+    if (this.hearthWindNode) {
+      try {
+        this.hearthWindNode.stop();
+        this.hearthWindNode.disconnect();
+      } catch {}
+      this.hearthWindNode = null;
+    }
+    if (!enable) return false;
+
+    // 1. Мягкий фоновый гул камина и зимнего ветра
+    const dur = 4.0;
+    const bufSize = Math.floor(this.ctx.sampleRate * dur);
+    const buffer = this.ctx.createBuffer(1, bufSize, this.ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < bufSize; i++) {
+      data[i] = (Math.random() * 2 - 1) * 0.35;
+    }
+    const windSource = this.ctx.createBufferSource();
+    windSource.buffer = buffer;
+    windSource.loop = true;
+
+    const lowFilter = this.ctx.createBiquadFilter();
+    lowFilter.type = "lowpass";
+    lowFilter.frequency.setValueAtTime(290, this.ctx.currentTime);
+
+    const windGain = this.ctx.createGain();
+    windGain.gain.setValueAtTime(0.055, this.ctx.currentTime);
+
+    windSource.connect(lowFilter);
+    lowFilter.connect(windGain);
+    windGain.connect(this.ctx.destination);
+    windSource.start();
+    this.hearthWindNode = windSource;
+
+    // 2. Потрескивание угольков и далёкие рождественские бубенцы
+    this.hearthInterval = window.setInterval(() => {
+      if (!this.ctx) return;
+      const now = this.ctx.currentTime;
+      // Щелчок уголька в камине
+      if (Math.random() < 0.78) {
+        const crackleOsc = this.ctx.createOscillator();
+        const crackleGain = this.ctx.createGain();
+        crackleOsc.type = "triangle";
+        crackleOsc.frequency.setValueAtTime(
+          900 + Math.random() * 1900,
+          now
+        );
+        crackleGain.gain.setValueAtTime(0.025, now);
+        crackleGain.gain.exponentialRampToValueAtTime(0.0005, now + 0.035);
+        crackleOsc.connect(crackleGain);
+        crackleGain.connect(this.ctx.destination);
+        crackleOsc.start(now);
+        crackleOsc.stop(now + 0.04);
+      }
+      // Далёкий звон рождественского колокольчика
+      if (Math.random() < 0.32) {
+        const bellFreqs = [1046.5, 1318.5, 1567.98, 2093.0];
+        const f = bellFreqs[Math.floor(Math.random() * bellFreqs.length)];
+        const bellOsc = this.ctx.createOscillator();
+        const bellGain = this.ctx.createGain();
+        bellOsc.type = "sine";
+        bellOsc.frequency.setValueAtTime(f, now);
+        bellGain.gain.setValueAtTime(0.022, now);
+        bellGain.gain.exponentialRampToValueAtTime(0.0004, now + 0.9);
+        bellOsc.connect(bellGain);
+        bellGain.connect(this.ctx.destination);
+        bellOsc.start(now);
+        bellOsc.stop(now + 0.95);
+      }
+    }, 320);
+
+    return true;
+  }
+}
+
+const musicBoxSynth = new ChamberOrchestraSynth();
+
+// ============================================================================
+// 3. ИНТЕРАКТИВНЫЙ 3D-ПРОСМОТРЩИК ХРУСТАЛЬНОГО ШАРА (VOXEL SNOWGLOBE VIEWER)
+// ============================================================================
+function VoxelSnowglobe3DViewer({
+  voxels = [],
+  baseMaterial = "mahogany",
+  glitterColor = "#fde047",
+  engravingText = "Свет 2026",
+  size = "sm",
+}) {
+  const mountRef = useRef(null);
+  const dim = size === "lg" ? 260 : 132;
+
+  useEffect(() => {
+    const container = mountRef.current;
+    if (!container) return;
+
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 80);
+    camera.position.set(0, 1.8, 11.6);
+    camera.lookAt(0, -0.35, 0);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setSize(dim, dim);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    container.innerHTML = "";
+    container.appendChild(renderer.domElement);
+
+    scene.add(new THREE.AmbientLight("#ffffff", 1.55));
+    const dl = new THREE.DirectionalLight("#fef08a", 2.4);
+    dl.position.set(8, 14, 10);
+    scene.add(dl);
+
+    const rootGroup = new THREE.Group();
+    scene.add(rootGroup);
+
+    const baseColor = BASE_MAT_COLOR_MAP[baseMaterial] || "#5c2409";
+    const baseMesh = new THREE.Mesh(
+      new THREE.CylinderGeometry(3.2, 3.65, 1.25, 28),
+      new THREE.MeshStandardMaterial({
+        color: baseColor,
+        roughness: 0.4,
+        metalness: 0.35,
+      })
+    );
+    baseMesh.position.y = -3.0;
+    rootGroup.add(baseMesh);
+
+    const rimMesh = new THREE.Mesh(
+      new THREE.TorusGeometry(3.25, 0.14, 10, 32),
+      new THREE.MeshStandardMaterial({
+        color: "#fbbf24",
+        metalness: 0.85,
+        roughness: 0.2,
+      })
+    );
+    rimMesh.rotation.x = Math.PI / 2;
+    rimMesh.position.y = -2.38;
+    rootGroup.add(rimMesh);
+
+    const vSize = 0.5;
+    const blockGeo = new THREE.BoxGeometry(
+      vSize * 0.95,
+      vSize * 0.95,
+      vSize * 0.95
+    );
+    const activeVoxels =
+      voxels && voxels.length > 0 ? voxels : VOXEL_BLUEPRINTS[0].blocks;
+
+    activeVoxels.forEach((v) => {
+      const m = new THREE.Mesh(
+        blockGeo,
+        new THREE.MeshStandardMaterial({
+          color: v.color || "#fbbf24",
+          roughness: 0.28,
+          metalness: 0.15,
+        })
+      );
+      m.position.set(
+        (v.x - 3.5) * vSize,
+        -2.05 + v.y * vSize,
+        (v.z - 3.5) * vSize
+      );
+      rootGroup.add(m);
+    });
+
+    const glitterGeo = new THREE.BufferGeometry();
+    const gCount = 48;
+    const gPos = new Float32Array(gCount * 3);
+    for (let i = 0; i < gCount; i++) {
+      const r = Math.random() * 2.7;
+      const th = Math.random() * Math.PI * 2;
+      const ph = Math.random() * Math.PI;
+      gPos[i * 3] = r * Math.sin(ph) * Math.cos(th);
+      gPos[i * 3 + 1] = 0.3 + r * Math.cos(ph);
+      gPos[i * 3 + 2] = r * Math.sin(ph) * Math.sin(th);
+    }
+    glitterGeo.setAttribute("position", new THREE.BufferAttribute(gPos, 3));
+    const glitterMat = new THREE.PointsMaterial({
+      color: glitterColor || "#fde047",
+      size: 0.22,
+      transparent: true,
+      opacity: 0.85,
+    });
+    const glitterPoints = new THREE.Points(glitterGeo, glitterMat);
+    rootGroup.add(glitterPoints);
+
+    const domeMesh = new THREE.Mesh(
+      new THREE.SphereGeometry(3.45, 28, 22),
+      new THREE.MeshPhongMaterial({
+        color: "#e0f2fe",
+        transparent: true,
+        opacity: 0.22,
+        shininess: 120,
+        depthWrite: false,
+      })
+    );
+    domeMesh.position.y = 0.4;
+    rootGroup.add(domeMesh);
+
+    let isDragging = false;
+    let prevX = 0;
+    let prevY = 0;
+    let rotY = 0.45;
+    let rotX = 0.12;
+
+    const onDown = (e) => {
+      isDragging = true;
+      prevX = e.clientX ?? e.touches?.[0]?.clientX ?? 0;
+      prevY = e.clientY ?? e.touches?.[0]?.clientY ?? 0;
+    };
+    const onMove = (e) => {
+      if (!isDragging) return;
+      const cx = e.clientX ?? e.touches?.[0]?.clientX ?? 0;
+      const cy = e.clientY ?? e.touches?.[0]?.clientY ?? 0;
+      rotY += (cx - prevX) * 0.015;
+      rotX = Math.max(-0.4, Math.min(0.55, rotX + (cy - prevY) * 0.012));
+      prevX = cx;
+      prevY = cy;
+    };
+    const onUp = () => {
+      isDragging = false;
+    };
+
+    const dom = renderer.domElement;
+    dom.addEventListener("mousedown", onDown);
+    dom.addEventListener("touchstart", onDown, { passive: true });
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("touchmove", onMove, { passive: true });
+    window.addEventListener("mouseup", onUp);
+    window.addEventListener("touchend", onUp);
+
+    let frameId;
+    const animate = () => {
+      frameId = requestAnimationFrame(animate);
+      if (!isDragging) rotY += 0.009;
+      rootGroup.rotation.y = rotY;
+      rootGroup.rotation.x = rotX;
+      glitterPoints.rotation.y -= 0.005;
+      renderer.render(scene, camera);
+    };
+    animate();
+
+    return () => {
+      cancelAnimationFrame(frameId);
+      dom.removeEventListener("mousedown", onDown);
+      dom.removeEventListener("touchstart", onDown);
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("touchmove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      window.removeEventListener("touchend", onUp);
+      renderer.dispose();
+    };
+  }, [voxels, baseMaterial, glitterColor, dim]);
+
+  return (
+    <div className="flex flex-col items-center shrink-0">
+      <div
+        ref={mountRef}
+        style={{ width: dim, height: dim }}
+        className="rounded-2xl border border-amber-400/35 bg-gradient-to-b from-slate-900/90 to-slate-950 cursor-grab active:cursor-grabbing overflow-hidden shadow-inner"
+        title="Потяните мышью или пальцем для вращения 3D-шара"
+      />
+      {engravingText && (
+        <div className="mt-1.5 px-2.5 py-0.5 rounded-md bg-amber-500/15 border border-amber-400/35 text-[10px] font-mono text-amber-200 max-w-[180px] truncate">
+          «{engravingText}»
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
+// 4. МОДАЛЬНОЕ ОКНО МАСТЕРСКОЙ 3D-ШАРА, КВИНТОВОГО КРУГА И 5 ДОРОЖЕК (v14.0)
+// ============================================================================
+function GiftWorkshopModal({ isOpen, onClose, onGiftCreated }) {
+  const [stepTab, setStepTab] = useState(0);
+  const [voxels, setVoxels] = useState(() => [...VOXEL_BLUEPRINTS[0].blocks]);
+  const [activeLayerY, setActiveLayerY] = useState(2);
+  const [selectedColor, setSelectedColor] = useState("#fbbf24");
+  const [baseMaterial, setBaseMaterial] = useState("mahogany");
+  const [glitterColor, setGlitterColor] = useState("#fde047");
+  const [engravingText, setEngravingText] = useState("Ручная работа • 2026");
+
+  const [scaleId, setScaleId] = useState("pentatonic");
+  const [tempoBpm, setTempoBpm] = useState(104);
+  const [activeInstrument, setActiveInstrument] = useState("celesta");
+  const [celestaTrack, setCelestaTrack] = useState(() => [
+    ...MELODY_PRESETS[0].celesta,
+  ]);
+  const [harpTrack, setHarpTrack] = useState(() => [...MELODY_PRESETS[0].harp]);
+  const [celloTrack, setCelloTrack] = useState(() => [
+    ...MELODY_PRESETS[0].cello,
+  ]);
+  const [fluteTrack, setFluteTrack] = useState(() => [
+    ...MELODY_PRESETS[0].flute,
+  ]);
+  const [drumTrack, setDrumTrack] = useState(() => [
+    ...MELODY_PRESETS[0].drums,
+  ]);
+
+  const [tonicSectorIdx, setTonicSectorIdx] = useState(0);
+  const [activeBarIdx, setActiveBarIdx] = useState(0);
+  const [barSlots, setBarSlots] = useState([
+    { sectorIdx: 0, ring: "major", label: "C" },
+    { sectorIdx: 1, ring: "major", label: "G" },
+    { sectorIdx: 0, ring: "minor", label: "Am" },
+    { sectorIdx: 11, ring: "major", label: "F" },
+  ]);
+  const [aiMoodPrompt, setAiMoodPrompt] = useState(
+    "Сказочный рождественский вальс со снежными бубенцами"
+  );
+
+  const [teaserTag, setTeaserTag] = useState("Тёплый маяк Севера");
+  const [secretWish, setSecretWish] = useState(
+    WISH_INSPIRATION_PROMPTS[0].text
+  );
+  const [authorName, setAuthorName] = useState("Хранитель Огня");
+  const [city, setCity] = useState("Санкт-Петербург");
+  const [totemPet, setTotemPet] = useState(TOTEM_PETS[0]);
+  const [contactHandle, setContactHandle] = useState("");
+  const [boxShape, setBoxShape] = useState("cube");
+  const [waxSeal, setWaxSeal] = useState("owl");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState("");
+
+  if (!isOpen) return null;
+
+  const voxelSafety = inspectVoxelGeometrySafety(voxels);
+  const effectiveContact = contactHandle.trim();
+  // Контакт не модерируется как публичный текст: его видит только партнёр
+  // после двойного согласия, а ссылки вида t.me/nick здесь законны.
+  const contactIsValid = effectiveContact.length >= 3;
+  const textSafety = inspectContentSafety({
+    Пожелание: secretWish,
+    Бирка: teaserTag,
+    Гравировка: engravingText,
+    Автор: authorName,
+    Город: city,
+  });
+  const canSubmit = voxelSafety.isSafe && textSafety.isSafe && contactIsValid && !isSubmitting;
+
+  const liveScore = computeAntiSybilScoreDetails({
+    wishText: secretWish,
+    celestaTrack,
+    harpTrack,
+    celloTrack,
+    fluteTrack,
+    drumTrack,
+    voxelsCount: voxels.length,
+    engravingText,
+    candlesCount: 1,
+  });
+
+  const handleScaleChange = (newScaleId) => {
+    setScaleId(newScaleId);
+    const qCelesta = quantizeTrackToScale(celestaTrack, newScaleId);
+    const qHarp = quantizeTrackToScale(harpTrack, newScaleId);
+    const qCello = quantizeTrackToScale(celloTrack, newScaleId);
+    const qFlute = quantizeTrackToScale(fluteTrack, newScaleId);
+    setCelestaTrack(qCelesta);
+    setHarpTrack(qHarp);
+    setCelloTrack(qCello);
+    setFluteTrack(qFlute);
+    musicBoxSynth.playMelody(
+      tempoBpm,
+      qCelesta,
+      qHarp,
+      qCello,
+      qFlute,
+      drumTrack
+    );
+  };
+
+  const handleSelectCircleSector = (sectorIdx, ring = "major") => {
+    const sector = CIRCLE_OF_FIFTHS_SECTORS[sectorIdx];
+    const nextBars = [...barSlots];
+    nextBars[activeBarIdx] = {
+      sectorIdx,
+      ring,
+      label: ring === "minor" ? sector.minor : sector.major,
+    };
+    setBarSlots(nextBars);
+    setTonicSectorIdx(sectorIdx);
+    const built = build16StepTracksFrom4Bars(nextBars, drumTrack);
+    setCelestaTrack(built.celesta);
+    setHarpTrack(built.harp);
+    setCelloTrack(built.cello);
+    setFluteTrack(built.flute);
+    setActiveBarIdx((prev) => (prev + 1) % 4);
+    musicBoxSynth.playSingleNote(
+      "celesta",
+      ring === "minor"
+        ? sector.minorVoicing.celesta[0]
+        : sector.majorVoicing.celesta[0]
+    );
+  };
+
+  const handleAiGenerateSymphony = () => {
+    const harmonized = harmonizeOrchestraFromWish(
+      `${aiMoodPrompt} ${secretWish}`,
+      scaleId
+    );
+    setTempoBpm(harmonized.tempo);
+    setCelestaTrack(harmonized.celesta);
+    setHarpTrack(harmonized.harp);
+    setCelloTrack(harmonized.cello);
+    setFluteTrack(harmonized.flute);
+    setDrumTrack(harmonized.drums);
+    musicBoxSynth.playMelody(
+      harmonized.tempo,
+      harmonized.celesta,
+      harmonized.harp,
+      harmonized.cello,
+      harmonized.flute,
+      harmonized.drums
+    );
+  };
+
+  const activeTrackArr =
+    activeInstrument === "celesta"
+      ? celestaTrack
+      : activeInstrument === "harp"
+      ? harpTrack
+      : activeInstrument === "cello"
+      ? celloTrack
+      : activeInstrument === "flute"
+      ? fluteTrack
+      : drumTrack;
+
+  const setActiveTrackStep = (stepIdx, noteVal) => {
+    musicBoxSynth.playSingleNote(activeInstrument, noteVal);
+    const updater = (prev) =>
+      prev.map((n, i) => (i === stepIdx ? (n === noteVal ? 0 : noteVal) : n));
+    if (activeInstrument === "celesta") setCelestaTrack(updater);
+    else if (activeInstrument === "harp") setHarpTrack(updater);
+    else if (activeInstrument === "cello") setCelloTrack(updater);
+    else if (activeInstrument === "flute") setFluteTrack(updater);
+    else setDrumTrack(updater);
+  };
+
+  const handleSubmit = async () => {
+    if (!canSubmit) return;
+    setIsSubmitting(true);
+    setSubmitError("");
+    try {
+      await onGiftCreated({
+      snowglobe: {
+        sculpture_id: "cottage",
+        voxels,
+        base_material: baseMaterial,
+        glitter_color: glitterColor,
+        custom_craft_title: teaserTag,
+        engraving_text: engravingText,
+      },
+      packaging: {
+        box_shape: boxShape,
+        paper_pattern: "nordic_knit",
+        ribbon_color: "#fbbf24",
+        wax_seal_stamp: waxSeal,
+      },
+      melody: {
+        tempo_bpm: tempoBpm,
+        celesta_track: celestaTrack,
+        harp_track: harpTrack,
+        cello_track: celloTrack,
+        flute_track: fluteTrack,
+        drum_track: drumTrack,
+      },
+      card: {
+        teaser_tag: teaserTag,
+        secret_wish: secretWish,
+        author_display_name: authorName,
+        city,
+        totem_pet: totemPet,
+        contact_handle: effectiveContact,
+      },
+      });
+      onClose();
+    } catch (err) {
+      setSubmitError(err?.message || "Не удалось повесить шар. Попробуйте ещё раз.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const subdominantIdx = (tonicSectorIdx + 11) % 12;
+  const dominantIdx = (tonicSectorIdx + 1) % 12;
+
+  return (
+    <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-xl flex items-center justify-center p-2 sm:p-4 overflow-y-auto">
+      <div className="w-full max-w-5xl bg-[#091224] border border-amber-400/45 rounded-3xl shadow-2xl overflow-hidden my-auto max-h-[94vh] flex flex-col">
+        {/* Шапка Мастерской */}
+        <div className="flex items-center justify-between px-4 py-3 bg-slate-950/90 border-b border-slate-800">
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="text-lg">🤲</span>
+            <h2 className="font-serif text-base sm:text-xl font-bold text-amber-50 truncate">
+              Мастерская Ручного Творчества • World Fir Gifts
+            </h2>
+            <span
+              className={`px-2 py-0.5 rounded-lg text-[10px] font-bold border whitespace-nowrap ${
+                voxelSafety.isSafe && textSafety.isSafe
+                  ? "bg-emerald-950/90 border-emerald-400/40 text-emerald-300"
+                  : "bg-rose-950/90 border-rose-400/50 text-rose-300"
+              }`}
+            >
+              🛡️ Фильтр 18+ {voxelSafety.isSafe && textSafety.isSafe ? "ОК" : "БЛОК"}
+            </span>
+            <span className="px-2 py-0.5 rounded-lg bg-amber-500/20 border border-amber-400/40 text-amber-300 text-[10px] font-mono whitespace-nowrap">
+              ✨ Свет: {liveScore.total}
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              musicBoxSynth.stop();
+              onClose();
+            }}
+            className="w-8 h-8 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300"
+          >
+            ✕
+          </button>
+        </div>
+
+        {/* Вкладки */}
+        <div className="grid grid-cols-3 bg-slate-950/60 border-b border-slate-800 text-xs font-bold">
+          {[
+            { idx: 0, label: "1. 🧊 3D-Воксели Шара" },
+            { idx: 1, label: "2. 🥁 Студия, Круг 5/4 & ИИ" },
+            { idx: 2, label: "3. 📜 Свиток Души" },
+          ].map((t) => (
+            <button
+              key={t.idx}
+              type="button"
+              onClick={() => setStepTab(t.idx)}
+              className={`py-2.5 px-2 border-b-2 transition whitespace-nowrap truncate ${
+                stepTab === t.idx
+                  ? "border-amber-400 text-amber-300 bg-amber-500/10"
+                  : "border-transparent text-slate-400 hover:text-slate-200"
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Тело вкладки */}
+        <div className="p-4 sm:p-5 overflow-y-auto space-y-4 flex-1">
+          {stepTab === 0 && (
+            <div className="grid grid-cols-1 md:grid-cols-12 gap-5 items-start">
+              <div className="md:col-span-5 flex flex-col items-center bg-slate-950/70 border border-slate-800 rounded-2xl p-4 space-y-3">
+                <VoxelSnowglobe3DViewer
+                  voxels={voxels}
+                  baseMaterial={baseMaterial}
+                  glitterColor={glitterColor}
+                  engravingText={engravingText}
+                  size="lg"
+                />
+                <div className="w-full space-y-2">
+                  <label className="text-[11px] text-slate-400 block">
+                    Гравировка на подиуме шара:
+                  </label>
+                  <input
+                    type="text"
+                    maxLength={44}
+                    value={engravingText}
+                    onChange={(e) => setEngravingText(e.target.value)}
+                    className="w-full px-3 py-1.5 rounded-xl bg-slate-900 border border-slate-700 text-xs text-amber-100"
+                  />
+                </div>
+              </div>
+
+              <div className="md:col-span-7 space-y-3">
+                <div className="flex flex-wrap gap-1.5">
+                  {VOXEL_BLUEPRINTS.map((bp) => (
+                    <button
+                      key={bp.id}
+                      type="button"
+                      onClick={() => setVoxels([...bp.blocks])}
+                      className="px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs text-amber-200 border border-amber-400/25"
+                    >
+                      {bp.title}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs text-slate-400">
+                    Слой высоты Y ({activeLayerY + 1}/8):
+                  </span>
+                  {[0, 1, 2, 3, 4, 5, 6, 7].map((ly) => (
+                    <button
+                      key={ly}
+                      type="button"
+                      onClick={() => setActiveLayerY(ly)}
+                      className={`w-7 h-7 rounded-lg text-xs font-bold ${
+                        activeLayerY === ly
+                          ? "bg-amber-400 text-slate-950"
+                          : "bg-slate-800 text-slate-300"
+                      }`}
+                    >
+                      {ly + 1}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {VOXEL_PALETTE.map((c) => (
+                    <button
+                      key={c.id}
+                      type="button"
+                      onClick={() => setSelectedColor(c.hex)}
+                      style={{ backgroundColor: c.hex }}
+                      className={`w-6 h-6 rounded-full border-2 ${
+                        selectedColor === c.hex
+                          ? "border-white scale-110"
+                          : "border-slate-700"
+                      }`}
+                      title={c.name}
+                    />
+                  ))}
+                </div>
+
+                <div className="grid grid-cols-8 gap-1.5 bg-slate-950 p-3 rounded-2xl border border-slate-800 max-w-[290px]">
+                  {Array.from({ length: 64 }).map((_, idx) => {
+                    const vx = idx % 8;
+                    const vz = Math.floor(idx / 8);
+                    const existing = voxels.find(
+                      (b) => b.x === vx && b.y === activeLayerY && b.z === vz
+                    );
+                    return (
+                      <button
+                        key={idx}
+                        type="button"
+                        onClick={() => {
+                          if (existing) {
+                            setVoxels((prev) =>
+                              prev.filter(
+                                (b) =>
+                                  !(
+                                    b.x === vx &&
+                                    b.y === activeLayerY &&
+                                    b.z === vz
+                                  )
+                              )
+                            );
+                          } else {
+                            setVoxels((prev) => [
+                              ...prev,
+                              {
+                                x: vx,
+                                y: activeLayerY,
+                                z: vz,
+                                color: selectedColor,
+                              },
+                            ]);
+                          }
+                        }}
+                        style={{
+                          backgroundColor: existing ? existing.color : undefined,
+                        }}
+                        className={`w-7 h-7 rounded-md border transition ${
+                          existing
+                            ? "border-white"
+                            : "bg-slate-900 border-slate-800 hover:border-amber-400/50"
+                        }`}
+                      />
+                    );
+                  })}
+                </div>
+
+                {!voxelSafety.isSafe && (
+                  <div className="p-3 rounded-xl bg-rose-950/80 border border-rose-400/50 text-xs text-rose-200">
+                    ⚠️ {voxelSafety.reason}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {stepTab === 1 && (
+            <div className="space-y-4">
+              {/* ИИ-Генератор 5 дорожек */}
+              <div className="p-3 rounded-2xl bg-gradient-to-r from-indigo-950/80 via-slate-900 to-amber-950/60 border border-amber-400/35 flex flex-col sm:flex-row gap-2">
+                <input
+                  type="text"
+                  value={aiMoodPrompt}
+                  onChange={(e) => setAiMoodPrompt(e.target.value)}
+                  placeholder="Настроение мелодии для ИИ..."
+                  className="flex-1 px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-xs text-white"
+                />
+                <button
+                  type="button"
+                  onClick={handleAiGenerateSymphony}
+                  className="px-4 py-2 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold text-xs whitespace-nowrap"
+                >
+                  ✨ Сгенерировать мелодию нейросетью
+                </button>
+              </div>
+
+              {/* 8 Музыкальных Мотивов и Ладов */}
+              <div>
+                <div className="text-[11px] uppercase tracking-wider text-slate-400 mb-1.5">
+                  Музыкальный лад и мотив (8 строев):
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  {SCALE_MODES.map((m) => (
+                    <button
+                      key={m.id}
+                      type="button"
+                      onClick={() => handleScaleChange(m.id)}
+                      className={`p-2 rounded-xl border text-left transition ${
+                        scaleId === m.id
+                          ? "border-amber-400 bg-amber-500/15 text-white"
+                          : "border-slate-800 bg-slate-950/60 text-slate-300 hover:border-slate-700"
+                      }`}
+                    >
+                      <div className="text-xs font-bold truncate">{m.title}</div>
+                      <div className="text-[10px] text-amber-300/80 truncate">
+                        {m.badge}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Интерактивный Квинто-Квартовый Круг */}
+              <div className="grid grid-cols-1 md:grid-cols-12 gap-4 items-center bg-slate-950/75 border border-slate-800 rounded-2xl p-3.5">
+                <div className="md:col-span-5 flex flex-col items-center">
+                  <svg viewBox="0 0 240 240" className="w-52 h-52">
+                    {CIRCLE_OF_FIFTHS_SECTORS.map((sec, idx) => {
+                      const angle = (idx * 30 - 90) * (Math.PI / 180);
+                      const xMaj = 120 + Math.cos(angle) * 88;
+                      const yMaj = 120 + Math.sin(angle) * 88;
+                      const xMin = 120 + Math.cos(angle) * 52;
+                      const yMin = 120 + Math.sin(angle) * 52;
+                      const isTonic = idx === tonicSectorIdx;
+                      const isSub = idx === subdominantIdx;
+                      const isDom = idx === dominantIdx;
+                      const fillMaj = isTonic
+                        ? "#f59e0b"
+                        : isSub
+                        ? "#10b981"
+                        : isDom
+                        ? "#f43f5e"
+                        : "#1e293b";
+
+                      return (
+                        <g key={sec.major}>
+                          <circle
+                            cx={xMaj}
+                            cy={yMaj}
+                            r="18"
+                            fill={fillMaj}
+                            stroke="#475569"
+                            strokeWidth="1.4"
+                            className="cursor-pointer hover:opacity-90"
+                            onClick={() =>
+                              handleSelectCircleSector(idx, "major")
+                            }
+                          />
+                          <text
+                            x={xMaj}
+                            y={yMaj + 4}
+                            textAnchor="middle"
+                            fill={isTonic ? "#0f172a" : "#f8fafc"}
+                            fontSize="11"
+                            fontWeight="bold"
+                            className="pointer-events-none"
+                          >
+                            {sec.major}
+                          </text>
+                          <circle
+                            cx={xMin}
+                            cy={yMin}
+                            r="13"
+                            fill={isTonic ? "#7c3aed" : "#0f172a"}
+                            stroke="#334155"
+                            strokeWidth="1"
+                            className="cursor-pointer hover:opacity-90"
+                            onClick={() =>
+                              handleSelectCircleSector(idx, "minor")
+                            }
+                          />
+                          <text
+                            x={xMin}
+                            y={yMin + 3}
+                            textAnchor="middle"
+                            fill="#cbd5e1"
+                            fontSize="9"
+                            className="pointer-events-none"
+                          >
+                            {sec.minor}
+                          </text>
+                        </g>
+                      );
+                    })}
+                    <circle
+                      cx="120"
+                      cy="120"
+                      r="24"
+                      fill="#090d16"
+                      stroke="#f59e0b"
+                      strokeWidth="1"
+                    />
+                    <text
+                      x="120"
+                      y="123"
+                      textAnchor="middle"
+                      fill="#fde047"
+                      fontSize="9"
+                      fontWeight="bold"
+                    >
+                      КРУГ 5/4
+                    </text>
+                  </svg>
+                </div>
+
+                <div className="md:col-span-7 space-y-2.5">
+                  <div className="text-xs font-bold text-amber-300">
+                    🧭 Квинто-квартовый компас аккордов (Smart Chords)
+                  </div>
+                  <p className="text-[11px] text-slate-300 leading-relaxed">
+                    Золотой сектор — <strong className="text-amber-300">Тоника (I)</strong>, против часовой — <strong className="text-emerald-400">Субдоминанта (IV)</strong>, по часовой — <strong className="text-rose-400">Доминанта (V)</strong>, внутри — <strong className="text-purple-300">Параллельный минор (vi)</strong>.
+                  </p>
+                  <div className="grid grid-cols-4 gap-2">
+                    {barSlots.map((slot, bIdx) => (
+                      <button
+                        key={bIdx}
+                        type="button"
+                        onClick={() => setActiveBarIdx(bIdx)}
+                        className={`p-2 rounded-xl border text-center ${
+                          activeBarIdx === bIdx
+                            ? "border-amber-400 bg-amber-500/20 text-white"
+                            : "border-slate-800 bg-slate-900 text-slate-300"
+                        }`}
+                      >
+                        <div className="text-[10px] text-slate-400">
+                          Такт {bIdx + 1}
+                        </div>
+                        <div className="text-sm font-mono font-bold text-amber-300">
+                          {slot.label}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                  <div className="flex flex-wrap gap-1.5 pt-1">
+                    {GUIDED_CIRCLE_PROGRESSIONS.map((prog) => (
+                      <button
+                        key={prog.id}
+                        type="button"
+                        onClick={() => {
+                          const next = prog.steps.map((s) => ({
+                            sectorIdx: s.sectorIdx,
+                            ring: s.ring,
+                            label:
+                              s.ring === "minor"
+                                ? CIRCLE_OF_FIFTHS_SECTORS[s.sectorIdx].minor
+                                : CIRCLE_OF_FIFTHS_SECTORS[s.sectorIdx].major,
+                          }));
+                          setBarSlots(next);
+                          const built = build16StepTracksFrom4Bars(
+                            next,
+                            drumTrack
+                          );
+                          setCelestaTrack(built.celesta);
+                          setHarpTrack(built.harp);
+                          setCelloTrack(built.cello);
+                          setFluteTrack(built.flute);
+                          musicBoxSynth.playMelody(
+                            tempoBpm,
+                            built.celesta,
+                            built.harp,
+                            built.cello,
+                            built.flute,
+                            drumTrack
+                          );
+                        }}
+                        className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] text-amber-200 border border-amber-400/25"
+                      >
+                        {prog.title}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Переключатель 5 дорожек оркестра и барабанов */}
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex flex-wrap gap-1.5">
+                  {ORCHESTRA_INSTRUMENTS.map((inst) => (
+                    <button
+                      key={inst.id}
+                      type="button"
+                      onClick={() => setActiveInstrument(inst.id)}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-bold transition whitespace-nowrap ${
+                        activeInstrument === inst.id
+                          ? inst.colorClass
+                          : "bg-slate-800 text-slate-300 hover:bg-slate-700"
+                      }`}
+                    >
+                      {inst.title}
+                    </button>
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  onClick={() =>
+                    musicBoxSynth.toggleMelody(
+                      "workshop-preview",
+                      tempoBpm,
+                      celestaTrack,
+                      harpTrack,
+                      celloTrack,
+                      fluteTrack,
+                      drumTrack
+                    )
+                  }
+                  className="px-4 py-1.5 rounded-xl bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-bold text-xs whitespace-nowrap"
+                >
+                  ▶ Прослушать 5 дорожек
+                </button>
+              </div>
+
+              {activeInstrument === "drums" && (
+                <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                  <span className="text-slate-400">Ритмы барабанов:</span>
+                  {DRUM_GROOVE_PRESETS.map((gr) => (
+                    <button
+                      key={gr.id}
+                      type="button"
+                      onClick={() => {
+                        setDrumTrack([...gr.pattern]);
+                        musicBoxSynth.playMelody(
+                          tempoBpm,
+                          celestaTrack,
+                          harpTrack,
+                          celloTrack,
+                          fluteTrack,
+                          gr.pattern
+                        );
+                      }}
+                      className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-purple-200 border border-purple-400/30 whitespace-nowrap"
+                    >
+                      {gr.title}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {/* 16-шаговая сетка секвенсора */}
+              <div className="overflow-x-auto bg-slate-950 border border-slate-800 rounded-2xl p-2.5">
+                <div className="min-w-[540px] space-y-1">
+                  {(activeInstrument === "drums"
+                    ? DRUM_INSTRUMENTS
+                    : NOTE_META.slice(0, 12)
+                  ).map((row) => (
+                    <div
+                      key={row.index}
+                      className="grid grid-cols-[90px_repeat(16,minmax(0,1fr))] gap-1 items-center"
+                    >
+                      <div className="text-[10px] font-mono text-slate-400 truncate text-right pr-1.5">
+                        {row.label}
+                      </div>
+                      {Array.from({ length: 16 }).map((_, sIdx) => {
+                        const isSelected = activeTrackArr[sIdx] === row.index;
+                        return (
+                          <button
+                            key={sIdx}
+                            type="button"
+                            onClick={() => setActiveTrackStep(sIdx, row.index)}
+                            className={`h-5 rounded border transition ${
+                              isSelected
+                                ? "bg-amber-400 border-amber-200"
+                                : sIdx % 4 === 0
+                                ? "bg-slate-900 border-slate-700"
+                                : "bg-slate-900/50 border-slate-800"
+                            }`}
+                          />
+                        );
+                      })}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {stepTab === 2 && (
+            <div className="space-y-3">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div>
+                  <label className="text-xs text-slate-400 block mb-1">
+                    Название шара (на бирке):
+                  </label>
+                  <input
+                    type="text"
+                    value={teaserTag}
+                    onChange={(e) => setTeaserTag(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-xs text-white"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-slate-400 block mb-1">
+                    Ваше имя или никнейм:
+                  </label>
+                  <input
+                    type="text"
+                    value={authorName}
+                    onChange={(e) => setAuthorName(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-xs text-white"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-slate-400 block mb-1">
+                    Ваш город:
+                  </label>
+                  <input
+                    type="text"
+                    value={city}
+                    onChange={(e) => setCity(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-xs text-white"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-slate-400 block mb-1">
+                    Контакт для обмена (только по двойному согласию):
+                  </label>
+                  <input
+                    type="text"
+                    value={contactHandle}
+                    onChange={(e) => setContactHandle(e.target.value)}
+                    placeholder="@nickname, телефон или e-mail"
+                    maxLength={120}
+                    autoComplete="off"
+                    className={`w-full px-3 py-2 rounded-xl bg-slate-950 border text-xs text-white ${
+                      contactIsValid ? "border-slate-700" : "border-amber-500/70"
+                    }`}
+                  />
+                  {!contactIsValid && (
+                    <p className="mt-1 text-[11px] text-amber-300/90">
+                      Укажите контакт — без него партнёр по Кольцу не сможет с вами связаться.
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              <div>
+                <label className="text-xs text-slate-400 block mb-1">
+                  Тайное пожелание внутри свитка (откроется получателю в Новогоднюю ночь):
+                </label>
+                <textarea
+                  rows={4}
+                  value={secretWish}
+                  onChange={(e) => setSecretWish(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-xs text-white"
+                />
+              </div>
+
+              {!textSafety.isSafe && (
+                <div className="p-3 rounded-xl bg-rose-950/80 border border-rose-400/50 text-xs text-rose-200">
+                  ⚠️ Поле «{textSafety.field}» отклонено фильтром безопасности:{" "}
+                  {textSafety.reason}
+                </div>
+              )}
+
+              {submitError && (
+                <div role="alert" className="p-3 rounded-xl bg-rose-950/80 border border-rose-400/50 text-xs text-rose-200">
+                  ⚠️ {submitError}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Нижняя панель */}
+        <div className="px-4 py-3 bg-slate-950 border-t border-slate-800 flex items-center justify-between gap-2">
+          <div className="text-xs text-slate-400">
+            Эшелон вашего дара:{" "}
+            <span className="text-amber-300 font-bold">
+              {liveScore.echelon.label}
+            </span>
+            {!contactIsValid && (
+              <button
+                type="button"
+                onClick={() => setStepTab(2)}
+                className="block mt-0.5 text-[11px] text-amber-300/90 underline underline-offset-2"
+              >
+                Добавьте контакт на шаге «Свиток Души»
+              </button>
+            )}
+          </div>
+          <button
+            type="button"
+            disabled={!canSubmit}
+            onClick={handleSubmit}
+            className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-amber-400 to-yellow-500 disabled:opacity-40 text-slate-950 font-bold text-xs sm:text-sm shadow-lg"
+          >
+            {isSubmitting ? "Вешаем шар…" : "🎄 Повесить хрустальный шар на Всемирную ёлку"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// 5. МОДАЛЬНОЕ ОКНО КОЛЬЦА ЧУДЕС И ПАСПОРТА NFT-РЕЛИКВИИ
+// ============================================================================
+function nodeFromUnlockedGift(card) {
+  const details = card.gift_details;
+  return {
+    id: details.gift_id,
+    coordinates: {
+      sequence_number: 0,
+      tier_index: 0,
+      branch_angle_rad: 0,
+      radius_offset: 0,
+      y_height: 0,
+    },
+    snowglobe: details.snowglobe,
+    packaging: details.packaging,
+    melody: details.melody,
+    card_preview: {
+      teaser_tag: details.teaser_tag,
+      author_display_name: card.partner_display_name,
+      city: card.partner_city,
+      totem_pet: card.partner_totem_pet,
+    },
+    secret_wish: details.secret_wish,
+    wish_char_count: details.wish_char_count,
+    quality_score: details.quality_score,
+    candles_count: details.candles_count,
+    genome_hash: details.genome_hash,
+  };
+}
+
+function MiracleRingModal({
+  isOpen,
+  onClose,
+  myUserId,
+  myGift,
+  isOfflineMode = false,
+  countdownText = "",
+  isUnlocked = false,
+  unlockAtMs = null,
+  onTriggerOwlFlight,
+  onOpenNftPassport,
+}) {
+  const [cards, setCards] = useState([]);
+  const [loadState, setLoadState] = useState("idle");
+  const [myConsent, setMyConsent] = useState(false);
+  const [partnerConsent, setPartnerConsent] = useState(true);
+
+  useEffect(() => {
+    if (!isOpen || !isUnlocked) return;
+    if (isOfflineMode || !myUserId) {
+      setLoadState("demo");
+      return;
+    }
+    let cancelled = false;
+    setLoadState("loading");
+    // Первые минуты после полуночи — разносим запросы во времени (0–15 с).
+    const justUnlocked = unlockAtMs != null && Date.now() - unlockAtMs < 3 * 60 * 1000;
+    apiFetchMyRing({ jitterMs: justUnlocked ? 15000 : 0 })
+      .then((data) => {
+        if (cancelled) return;
+        setCards(Array.isArray(data) ? data : []);
+        setLoadState(data && data.length > 0 ? "ready" : "empty");
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setLoadState(err?.status === 403 ? "locked" : "error");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, isUnlocked, isOfflineMode, myUserId, unlockAtMs]);
+
+  if (!isOpen) return null;
+  const mutual = myConsent && partnerConsent;
+
+  const handleConsent = async (card) => {
+    if (!myUserId) return;
+    try {
+      const updated = await apiGiveHandshakeConsent(card.handshake_id);
+      setCards((prev) =>
+        prev.map((c) => (c.handshake_id === updated.handshake_id ? updated : c))
+      );
+    } catch {
+      /* согласие можно повторить позже */
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-xl flex items-center justify-center p-3">
+      <div className="max-w-lg w-full bg-[#091224] border border-amber-400/50 rounded-3xl p-5 space-y-4 shadow-2xl max-h-[92vh] overflow-y-auto">
+        <div className="flex items-center justify-between">
+          <div className="text-xs uppercase tracking-wider text-amber-400 font-bold">
+            🦉 Стратифицированное Кольцо Чудес 2026
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="w-8 h-8 rounded-xl bg-slate-800 text-slate-300"
+          >
+            ✕
+          </button>
+        </div>
+
+        <h3 className="font-serif text-2xl font-bold text-white">
+          Двойное Рукопожатие Мастеров
+        </h3>
+
+        {(!isUnlocked || loadState === "locked") && (
+          <div className="p-4 rounded-2xl bg-slate-950/80 border border-sky-400/30 text-center space-y-2">
+            <div className="text-xs text-sky-200 font-semibold">
+              ⏳ Кольцо Чудес откроется в Новогоднюю полночь
+            </div>
+            <div className="font-mono text-lg font-bold text-amber-300">
+              {countdownText}
+            </div>
+            <p className="text-[11px] text-slate-400 leading-relaxed">
+              До полуночи тайные пожелания и контакты мастеров запечатаны сургучом.
+              Распаковка и обмен контактами — только после Новогоднего звона.
+            </p>
+            {myGift && (
+              <button
+                type="button"
+                onClick={() => onOpenNftPassport?.(myGift, null)}
+                className="py-2.5 px-3 rounded-xl bg-sky-500/20 border border-sky-400/50 text-sky-200 font-bold text-xs"
+              >
+                💎 NFT-Паспорт моего шара
+              </button>
+            )}
+          </div>
+        )}
+
+        {isUnlocked && loadState === "loading" && (
+          <div className="p-4 rounded-2xl bg-slate-950/80 border border-amber-400/30 text-xs text-amber-200 text-center">
+            🦉 Сверяем пары Кольца Чудес…
+          </div>
+        )}
+
+        {isUnlocked && loadState === "error" && (
+          <div className="p-4 rounded-2xl bg-rose-950/70 border border-rose-400/40 text-xs text-rose-200 text-center">
+            ⚠️ Не удалось загрузить связи обмена. Попробуйте открыть окно ещё раз.
+          </div>
+        )}
+
+        {isUnlocked && loadState === "empty" && (
+          <div className="p-4 rounded-2xl bg-slate-950/80 border border-amber-400/30 text-xs text-slate-300 leading-relaxed">
+            {myUserId
+              ? "Ваш шар появился на Ёлке уже после того, как Кольцо Чудес этого года сомкнулось. Он остаётся украшением Ёлки, а в следующем Кольце вы будете одним из первых."
+              : "Ваши связи обмена пока не сформированы. Повесьте хрустальный шар на Ёлку — и Кольцо Чудес соединит вас с другими мастерами в Новогоднюю ночь."}
+          </div>
+        )}
+
+        {isUnlocked &&
+          loadState === "ready" &&
+          cards.map((card) => (
+            <div
+              key={card.handshake_id}
+              className="p-3.5 rounded-2xl bg-slate-950/80 border border-amber-400/30 flex flex-col sm:flex-row items-center gap-3.5"
+            >
+              <VoxelSnowglobe3DViewer
+                voxels={card.gift_details.snowglobe?.voxels}
+                baseMaterial={card.gift_details.snowglobe?.base_material}
+                glitterColor={card.gift_details.snowglobe?.glitter_color}
+                engravingText={card.gift_details.snowglobe?.engraving_text}
+                size="sm"
+              />
+              <div className="space-y-1.5 text-xs flex-1 min-w-0">
+                <div className="font-bold text-amber-200">
+                  {card.role === "MY_RECIPIENT" ? "🎁 Ваш получатель" : "🎅 Ваш Тайный Санта"}
+                  : {card.partner_display_name} ({card.partner_city} • {card.partner_totem_pet})
+                </div>
+                <div className="text-amber-100">«{card.gift_details.teaser_tag}»</div>
+                <p className="text-slate-300 leading-relaxed">
+                  «{card.gift_details.secret_wish}»
+                </p>
+                <div className="text-[11px] text-emerald-300">
+                  {card.mutual_unlocked
+                    ? `🤝 Оба мастера дали согласие! Контакт открыт: ${card.partner_decrypted_contact}`
+                    : card.my_consent
+                    ? "⏳ Ожидаем согласия партнёра на обмен контактами…"
+                    : "Ожидается ваше согласие на обмен прямыми контактами."}
+                </div>
+              </div>
+              <div className="flex sm:flex-col gap-2 shrink-0">
+                {!card.my_consent && (
+                  <button
+                    type="button"
+                    onClick={() => handleConsent(card)}
+                    className="py-2.5 px-3 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold text-xs"
+                  >
+                    🤝 Рукопожатие
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() =>
+                    onOpenNftPassport?.(nodeFromUnlockedGift(card), card.partner_city)
+                  }
+                  className="py-2.5 px-3 rounded-xl bg-sky-500/20 border border-sky-400/50 text-sky-200 font-bold text-xs"
+                >
+                  💎 NFT-Паспорт
+                </button>
+              </div>
+            </div>
+          ))}
+
+        {isUnlocked && loadState === "demo" && myGift && (
+          <div className="p-3.5 rounded-2xl bg-slate-950/80 border border-amber-400/30 flex items-center gap-3.5">
+            <VoxelSnowglobe3DViewer
+              voxels={myGift.snowglobe?.voxels}
+              baseMaterial={myGift.snowglobe?.base_material}
+              glitterColor={myGift.snowglobe?.glitter_color}
+              engravingText={myGift.snowglobe?.engraving_text}
+              size="sm"
+            />
+            <div className="space-y-1.5 text-xs">
+              <div className="font-bold text-amber-200">
+                {myGift.card_preview?.teaser_tag}
+              </div>
+              <p className="text-slate-300 leading-relaxed">
+                «{myGift.secret_wish}»
+              </p>
+              <div className="text-[11px] text-emerald-300">
+                {mutual
+                  ? "🤝 Оба мастера дали согласие! Контакт открыт: @polar_navigator_2026"
+                  : "Ожидается ваше согласие на обмен прямыми контактами."}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {isUnlocked && loadState === "demo" && myGift && (
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setMyConsent(true);
+                setPartnerConsent(true);
+                onTriggerOwlFlight?.({
+                  handshake_id: `hs-${Date.now()}`,
+                  from_city: myGift.card_preview?.city || "Мирный",
+                  to_city: "Санкт-Петербург",
+                });
+              }}
+              className="flex-1 py-2.5 px-3 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold text-xs"
+            >
+              🤝 Подтвердить Рукопожатие и выпустить Сову
+            </button>
+            <button
+              type="button"
+              onClick={() => onOpenNftPassport?.(myGift, "Санкт-Петербург")}
+              className="py-2.5 px-3 rounded-xl bg-sky-500/20 border border-sky-400/50 text-sky-200 font-bold text-xs"
+            >
+              💎 NFT-Паспорт
+            </button>
+          </div>
+        )}
+
+        {isUnlocked && loadState === "demo" && !myGift && (
+          <div className="p-4 rounded-2xl bg-slate-950/80 border border-amber-400/30 text-xs text-slate-300 leading-relaxed">
+            Демо-режим: повесьте свой хрустальный шар на Ёлку, чтобы испытать
+            Двойное Рукопожатие и полёт Северной Совы.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function NftRelicPassportModal({ isOpen, onClose, gift, recipientCity }) {
+  if (!isOpen || !gift) return null;
+  const nftMeta = buildNftRelicMetadata(gift, recipientCity);
+
+  return (
+    <div className="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur-xl flex items-center justify-center p-3 overflow-y-auto">
+      <div className="max-w-lg w-full bg-[#091224] border border-sky-400/50 rounded-3xl p-5 space-y-4 shadow-2xl my-auto">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-mono text-sky-300 font-bold">
+            💎 {nftMeta.token_id} • Soulbound 1/1
+          </span>
+          <button
+            type="button"
+            onClick={onClose}
+            className="w-8 h-8 rounded-xl bg-slate-800 text-slate-300"
+          >
+            ✕
+          </button>
+        </div>
+
+        <h3 className="font-serif text-xl font-bold text-white">
+          {nftMeta.name}
+        </h3>
+        <p className="text-xs text-slate-300 leading-relaxed">
+          {nftMeta.description}
+        </p>
+
+        <div className="p-2.5 rounded-xl bg-slate-950 border border-slate-800 font-mono text-[10px] text-sky-300 break-all">
+          SHA-256 GENOME: {nftMeta.genome_sha256}
+        </div>
+
+        <div className="grid grid-cols-2 gap-2">
+          {nftMeta.attributes.slice(0, 8).map((attr, idx) => (
+            <div
+              key={idx}
+              className="p-2 rounded-xl bg-slate-900/90 border border-slate-800"
+            >
+              <div className="text-[10px] text-slate-400 uppercase">
+                {attr.trait_type}
+              </div>
+              <div className="text-xs font-bold text-amber-300 mt-0.5">
+                {attr.value}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="flex flex-col sm:flex-row gap-2 pt-1">
+          <button
+            type="button"
+            onClick={() =>
+              triggerBrowserFileDownload(
+                `${nftMeta.token_id}-3d-capsule.html`,
+                generateStandalone3DCapsuleHtml(nftMeta),
+                "text/html;charset=utf-8"
+              )
+            }
+            className="flex-1 py-2.5 px-3 rounded-xl bg-gradient-to-r from-amber-400 to-yellow-500 text-slate-950 font-bold text-xs"
+          >
+            💎 Скачать Вечную 3D-Капсулу (.HTML)
+          </button>
+          <button
+            type="button"
+            onClick={() =>
+              triggerBrowserFileDownload(
+                `${nftMeta.token_id}-metadata.json`,
+                JSON.stringify(nftMeta, null, 2),
+                "application/json;charset=utf-8"
+              )
+            }
+            className="py-2.5 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-sky-300 border border-sky-400/40 font-bold text-xs"
+          >
+            📄 JSON (ERC-721 / TON)
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// 6. MAIN 3D WORLD TREE SCENE (CRYSTAL ORBS + TRUE 3D SNOW & CHRISTMAS SANCTUARY)
+// ============================================================================
+export default function App() {
+  const mountRef = useRef(null);
+  const fgSnowCanvasRef = useRef(null);
+  const giftsMapRef = useRef(new Map());
+  const selectedGiftRef = useRef(null);
+
+  const glassGlobeMeshRef = useRef(null);
+  const pedestalBaseMeshRef = useRef(null);
+  const pedestalRimMeshRef = useRef(null);
+  const topCrownCapMeshRef = useRef(null);
+  const globalVoxelsMeshRef = useRef(null);
+  const globeInstanceToSeqRef = useRef([]);
+
+  const candleFlameMeshRef = useRef(null);
+  const candleHaloMeshRef = useRef(null);
+  const orbHaloPointsRef = useRef(null);
+  const orbHaloMatRef = useRef(null);
+  const activeCandlesMetaRef = useRef([]);
+  const selectionRingRef = useRef(null);
+  const spawnOwlRef = useRef(null);
+
+  const scrollTargetRef = useRef(9.5);
+  // Рождественская погода и управление снегопадом (v15.1 Mobile-First)
+  const [weatherPresetId, setWeatherPresetId] = useState("christmas_night");
+  const [snowDensityMultiplier, setSnowDensityMultiplier] = useState(0.7);
+  const [isForegroundSnowOn, setIsForegroundSnowOn] = useState(true);
+  const [isHearthSoundOn, setIsHearthSoundOn] = useState(false);
+  const [isWeatherDrawerOpen, setIsWeatherDrawerOpen] = useState(false);
+  const [isMobileCardExpanded, setIsMobileCardExpanded] = useState(false);
+
+  const weatherPresetRef = useRef(CHRISTMAS_ATMOSPHERE_PRESETS[0]);
+  const snowDensityRef = useRef(0.7);
+
+  const [selectedGift, setSelectedGift] = useState(null);
+  const [isInspectModalOpen, setIsInspectModalOpen] = useState(false);
+  const [nftModalState, setNftModalState] = useState({
+    isOpen: false,
+    gift: null,
+    recipientCity: null,
+  });
+
+  const [currentTier, setCurrentTier] = useState(0);
+  const [totalLoaded, setTotalLoaded] = useState(0);
+  const [totalVoxelsOnTree, setTotalVoxelsOnTree] = useState(0);
+  const [litGiftIds, setLitGiftIds] = useState(() => loadLitGiftIds());
+  const [audioPlaybackState, setAudioPlaybackState] = useState({
+    playingId: null,
+    step: null,
+    isPlaying: false,
+    isLooping: false,
+  });
+
+  const [isWorkshopOpen, setIsWorkshopOpen] = useState(false);
+  const [isRingModalOpen, setIsRingModalOpen] = useState(false);
+  const [myHungGift, setMyHungGift] = useState(null);
+  const [owlBanner, setOwlBanner] = useState(null);
+  const owlBannerTimeoutRef = useRef(null);
+  const [countdownText, setCountdownText] = useState("");
+  const [isOfflineMode, setIsOfflineMode] = useState(false);
+  const [myUserId, setMyUserId] = useState(null);
+  const [serverUnlockAtMs, setServerUnlockAtMs] = useState(null);
+  // Разница «часы сервера − часы устройства»: у многих телефонов время сбито на минуты.
+  const [clockOffsetMs, setClockOffsetMs] = useState(0);
+  const [reportedGiftIds, setReportedGiftIds] = useState(() => new Set());
+
+  const activeWeatherPreset = useMemo(
+    () =>
+      CHRISTMAS_ATMOSPHERE_PRESETS.find((p) => p.id === weatherPresetId) ||
+      CHRISTMAS_ATMOSPHERE_PRESETS[0],
+    [weatherPresetId]
+  );
+
+  useEffect(() => {
+    weatherPresetRef.current = activeWeatherPreset;
+  }, [activeWeatherPreset]);
+
+  useEffect(() => {
+    snowDensityRef.current = snowDensityMultiplier;
+  }, [snowDensityMultiplier]);
+
+  useEffect(() => {
+    selectedGiftRef.current = selectedGift;
+  }, [selectedGift]);
+
+  useEffect(() => {
+    return musicBoxSynth.subscribe((st) => {
+      setAudioPlaybackState(st);
+    });
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      musicBoxSynth.toggleCozyHearthAmbient(false);
+    };
+  }, []);
+
+  // Передний 2D-параллакс холст рождественских снежинок (60 FPS, 100% видимость на любом экране)
+  useEffect(() => {
+    const canvas = fgSnowCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    let animId;
+
+    const resizeCanvas = () => {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+    };
+    resizeCanvas();
+    window.addEventListener("resize", resizeCanvas);
+
+    const MAX_FG_FLAKES = 180;
+    const flakes = Array.from({ length: MAX_FG_FLAKES }, (_, i) => ({
+      x: Math.random() * window.innerWidth,
+      y: Math.random() * window.innerHeight,
+      r: 1.4 + Math.random() * 3.6,
+      vy: 0.65 + Math.random() * 1.45,
+      vx: (Math.random() - 0.5) * 0.7,
+      phase: Math.random() * Math.PI * 2,
+      spin: (Math.random() - 0.5) * 0.025,
+      angle: Math.random() * Math.PI * 2,
+      isStarFlake: i % 4 === 0,
+      isGoldSparkle: i % 9 === 0,
+    }));
+
+    const renderSnowOverlay = () => {
+      animId = requestAnimationFrame(renderSnowOverlay);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      const density = snowDensityRef.current;
+      if (!isForegroundSnowOn || density <= 0.02) return;
+
+      const preset = weatherPresetRef.current;
+      const activeCount = Math.min(
+        MAX_FG_FLAKES,
+        Math.floor(50 * density)
+      );
+
+      for (let i = 0; i < activeCount; i++) {
+        const f = flakes[i];
+        f.phase += 0.02;
+        f.angle += f.spin;
+        f.y += f.vy * preset.fallSpeed * (0.75 + density * 0.2);
+        f.x +=
+          (f.vx + Math.sin(f.phase) * 0.65) * preset.windSpeed;
+
+        if (f.y > canvas.height + 12) {
+          f.y = -10;
+          f.x = Math.random() * canvas.width;
+        }
+        if (f.x > canvas.width + 12) f.x = -10;
+        if (f.x < -12) f.x = canvas.width + 10;
+
+        ctx.save();
+        ctx.translate(f.x, f.y);
+        ctx.rotate(f.angle);
+
+        if (f.isGoldSparkle) {
+          const pulse = 0.45 + 0.5 * Math.sin(f.phase * 2.5);
+          ctx.fillStyle = `rgba(253, 224, 71, ${pulse * 0.85})`;
+          ctx.beginPath();
+          ctx.arc(0, 0, f.r * 0.9, 0, Math.PI * 2);
+          ctx.fill();
+        } else if (f.isStarFlake && f.r > 2.6) {
+          ctx.strokeStyle = "rgba(255, 255, 255, 0.82)";
+          ctx.lineWidth = 1.25;
+          for (let arm = 0; arm < 6; arm++) {
+            const a = (arm * Math.PI) / 3;
+            ctx.beginPath();
+            ctx.moveTo(0, 0);
+            ctx.lineTo(Math.cos(a) * f.r * 1.9, Math.sin(a) * f.r * 1.9);
+            ctx.stroke();
+          }
+        } else {
+          const grad = ctx.createRadialGradient(0, 0, 0.2, 0, 0, f.r * 1.4);
+          grad.addColorStop(0, "rgba(255, 255, 255, 0.92)");
+          grad.addColorStop(0.6, "rgba(224, 242, 254, 0.55)");
+          grad.addColorStop(1, "rgba(255, 255, 255, 0)");
+          ctx.fillStyle = grad;
+          ctx.beginPath();
+          ctx.arc(0, 0, f.r * 1.4, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.restore();
+      }
+    };
+    renderSnowOverlay();
+
+    return () => {
+      cancelAnimationFrame(animId);
+      window.removeEventListener("resize", resizeCanvas);
+    };
+  }, [isForegroundSnowOn]);
+
+  useEffect(() => {
+    const updateTimer = () => {
+      const diff = (serverUnlockAtMs ?? UNLOCK_TARGET_MS) - (Date.now() + clockOffsetMs);
+      if (diff <= 0) {
+        setCountdownText("Кольцо Чудес открыто!");
+        return;
+      }
+      const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+      const hours = Math.floor((diff / (1000 * 60 * 60)) % 24);
+      const mins = Math.floor((diff / (1000 * 60)) % 60);
+      const secs = Math.floor((diff / 1000) % 60);
+      setCountdownText(
+        `${days}д ${String(hours).padStart(2, "0")}ч ${String(mins).padStart(
+          2,
+          "0"
+        )}м ${String(secs).padStart(2, "0")}с`
+      );
+    };
+    updateTimer();
+    const id = window.setInterval(updateTimer, 1000);
+    return () => window.clearInterval(id);
+  }, [serverUnlockAtMs, clockOffsetMs]);
+
+  const syncInstancedMeshes = useCallback(() => {
+    const glassGlobeMesh = glassGlobeMeshRef.current;
+    const pedestalMesh = pedestalBaseMeshRef.current;
+    const rimMesh = pedestalRimMeshRef.current;
+    const crownCapMesh = topCrownCapMeshRef.current;
+    const voxelsMesh = globalVoxelsMeshRef.current;
+    const flameMesh = candleFlameMeshRef.current;
+    const haloMesh = candleHaloMeshRef.current;
+
+    if (
+      !glassGlobeMesh ||
+      !pedestalMesh ||
+      !rimMesh ||
+      !crownCapMesh ||
+      !voxelsMesh ||
+      !flameMesh ||
+      !haloMesh
+    ) {
+      return;
+    }
+
+    const dummy = new THREE.Object3D();
+    const voxelDummy = new THREE.Object3D();
+    const colorHelper = new THREE.Color();
+
+    const instanceToSeq = [];
+    const candleMeta = [];
+    const orbHaloMeta = [];
+    let globeIdx = 0;
+    let globalVoxelIdx = 0;
+
+    const ORB = GIFT_ORB_SCALE;
+    const miniVoxelSize = 0.092 * ORB;
+
+    giftsMapRef.current.forEach((gift) => {
+      if (globeIdx >= MAX_INSTANCES) return;
+
+      const { sequence_number, branch_angle_rad, radius_offset, y_height } =
+        gift.coordinates;
+      const worldY = 60.0 - y_height;
+      const worldX = Math.cos(branch_angle_rad) * radius_offset;
+      const worldZ = Math.sin(branch_angle_rad) * radius_offset;
+      const yaw = -branch_angle_rad + Math.PI * 0.5;
+      const cosY = Math.cos(yaw);
+      const sinY = Math.sin(yaw);
+
+      dummy.position.set(worldX, worldY - 0.36 * ORB, worldZ);
+      dummy.rotation.set(0, yaw, 0);
+      dummy.scale.set(ORB, ORB, ORB);
+      dummy.updateMatrix();
+      pedestalMesh.setMatrixAt(globeIdx, dummy.matrix);
+
+      const baseHex =
+        BASE_MAT_COLOR_MAP[gift.snowglobe?.base_material] || "#5c2409";
+      colorHelper.set(baseHex);
+      pedestalMesh.setColorAt(globeIdx, colorHelper);
+
+      dummy.position.set(worldX, worldY - 0.24 * ORB, worldZ);
+      dummy.rotation.set(Math.PI / 2, 0, 0);
+      dummy.scale.set(ORB, ORB, ORB);
+      dummy.updateMatrix();
+      rimMesh.setMatrixAt(globeIdx, dummy.matrix);
+
+      dummy.position.set(worldX, worldY + 0.14 * ORB, worldZ);
+      dummy.rotation.set(0, yaw, 0);
+      dummy.scale.set(ORB, ORB, ORB);
+      dummy.updateMatrix();
+      glassGlobeMesh.setMatrixAt(globeIdx, dummy.matrix);
+      colorHelper.set(gift.snowglobe?.glitter_color || "#e0f2fe");
+      glassGlobeMesh.setColorAt(globeIdx, colorHelper);
+
+      dummy.position.set(worldX, worldY + 0.76 * ORB, worldZ);
+      dummy.rotation.set(0, yaw, 0);
+      dummy.scale.set(ORB, ORB, ORB);
+      dummy.updateMatrix();
+      crownCapMesh.setMatrixAt(globeIdx, dummy.matrix);
+
+      const voxelsList =
+        gift.snowglobe?.voxels && gift.snowglobe.voxels.length > 0
+          ? gift.snowglobe.voxels
+          : VOXEL_BLUEPRINTS[0].blocks;
+
+      for (let vIdx = 0; vIdx < voxelsList.length; vIdx++) {
+        if (globalVoxelIdx >= MAX_TOTAL_TREE_VOXELS) break;
+        const v = voxelsList[vIdx];
+
+        const lx = (v.x - 3.5) * miniVoxelSize;
+        const ly = -0.2 * ORB + v.y * miniVoxelSize;
+        const lz = (v.z - 3.5) * miniVoxelSize;
+
+        const rx = lx * cosY - lz * sinY;
+        const rz = lx * sinY + lz * cosY;
+
+        voxelDummy.position.set(worldX + rx, worldY + ly, worldZ + rz);
+        voxelDummy.rotation.set(0, yaw, 0);
+        voxelDummy.scale.set(
+          miniVoxelSize * 0.95,
+          miniVoxelSize * 0.95,
+          miniVoxelSize * 0.95
+        );
+        voxelDummy.updateMatrix();
+
+        voxelsMesh.setMatrixAt(globalVoxelIdx, voxelDummy.matrix);
+        colorHelper.set(v.color || "#fbbf24");
+        voxelsMesh.setColorAt(globalVoxelIdx, colorHelper);
+        globalVoxelIdx++;
+      }
+
+      instanceToSeq.push(sequence_number);
+
+      const cCount = gift.candles_count || 0;
+      const baseScale =
+        cCount > 0 ? Math.min(0.32 + cCount * 0.045, 0.78) : 0.0001;
+      candleMeta.push({
+        worldX,
+        worldY: worldY + 0.98 * ORB,
+        worldZ,
+        baseScale: baseScale * ORB,
+        phase: sequence_number * 1.37,
+        hasCandle: cCount > 0,
+      });
+
+      orbHaloMeta.push({
+        worldX,
+        worldY: worldY + 0.14 * ORB,
+        worldZ,
+        color: gift.snowglobe?.glitter_color || "#fde047",
+        size: (2.2 + Math.min(0.6, cCount * 0.05)) * ORB,
+        phase: sequence_number * 0.61,
+      });
+
+      globeIdx++;
+    });
+
+    globeInstanceToSeqRef.current = instanceToSeq;
+
+    glassGlobeMesh.count = globeIdx;
+    pedestalMesh.count = globeIdx;
+    rimMesh.count = globeIdx;
+    crownCapMesh.count = globeIdx;
+    voxelsMesh.count = globalVoxelIdx;
+    flameMesh.count = globeIdx;
+    haloMesh.count = globeIdx;
+
+    glassGlobeMesh.instanceMatrix.needsUpdate = true;
+    pedestalMesh.instanceMatrix.needsUpdate = true;
+    rimMesh.instanceMatrix.needsUpdate = true;
+    crownCapMesh.instanceMatrix.needsUpdate = true;
+    voxelsMesh.instanceMatrix.needsUpdate = true;
+
+    if (glassGlobeMesh.instanceColor)
+      glassGlobeMesh.instanceColor.needsUpdate = true;
+    if (pedestalMesh.instanceColor)
+      pedestalMesh.instanceColor.needsUpdate = true;
+    if (voxelsMesh.instanceColor) voxelsMesh.instanceColor.needsUpdate = true;
+
+    for (const m of [
+      glassGlobeMesh,
+      pedestalMesh,
+      rimMesh,
+      crownCapMesh,
+      voxelsMesh,
+      flameMesh,
+      haloMesh,
+    ]) {
+      m.frustumCulled = false;
+      m.boundingSphere = null;
+      m.boundingBox = null;
+    }
+
+    activeCandlesMetaRef.current = candleMeta;
+
+    const orbHalosRef = orbHaloPointsRef.current;
+    if (orbHalosRef) {
+      const hPos = orbHalosRef.geometry.getAttribute("position");
+      const hCol = orbHalosRef.geometry.getAttribute("aColor");
+      const hSize = orbHalosRef.geometry.getAttribute("aSize");
+      const hPhase = orbHalosRef.geometry.getAttribute("aPhase");
+      const tmpHalo = new THREE.Color();
+      orbHaloMeta.forEach((m, i) => {
+        hPos.setXYZ(i, m.worldX, m.worldY, m.worldZ);
+        tmpHalo.set(m.color);
+        hCol.setXYZ(i, tmpHalo.r, tmpHalo.g, tmpHalo.b);
+        hSize.setX(i, m.size);
+        hPhase.setX(i, m.phase);
+      });
+      hPos.needsUpdate = true;
+      hCol.needsUpdate = true;
+      hSize.needsUpdate = true;
+      hPhase.needsUpdate = true;
+      orbHalosRef.geometry.setDrawRange(0, orbHaloMeta.length);
+    }
+
+    setTotalLoaded(globeIdx);
+    setTotalVoxelsOnTree(globalVoxelIdx);
+  }, []);
+
+  // Загрузка витрины подарков из API (фолбэк на демо-данные при недоступности).
+  // Размещён ПОСЛЕ syncInstancedMeshes: иначе deps-массив бьётся о TDZ.
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadShowcase = async () => {
+      const [giftsRes, profileRes, ringRes] = await Promise.allSettled([
+        apiFetchGifts(),
+        apiFetchMyProfile(),
+        apiFetchRingStatus(),
+      ]);
+      if (cancelled) return;
+
+      if (ringRes.status === "fulfilled" && ringRes.value) {
+        const serverNow = Date.parse(ringRes.value.server_time || "");
+        const offset = Number.isNaN(serverNow) ? 0 : serverNow - Date.now();
+        // Сдвиг меньше 2 с не трогаем — это просто задержка сети.
+        if (Math.abs(offset) > 2000) setClockOffsetMs(offset);
+        if (ringRes.value.unlocked) setServerUnlockAtMs(Date.now() + offset - 1);
+        else if (ringRes.value.unlock_at) {
+          const parsed = Date.parse(ringRes.value.unlock_at);
+          if (!Number.isNaN(parsed)) setServerUnlockAtMs(parsed);
+        }
+      }
+      if (profileRes.status === "fulfilled" && profileRes.value?.user_id) {
+        setMyUserId(profileRes.value.user_id);
+      }
+
+      const map = new Map();
+      if (giftsRes.status === "fulfilled" && Array.isArray(giftsRes.value)) {
+        giftsRes.value.forEach((dto) => {
+          const node = giftNodeFromDTO(dto);
+          map.set(node.coordinates.sequence_number, node);
+        });
+      } else {
+        setIsOfflineMode(true);
+        generateProceduralGifts(144).forEach((gift, idx) => map.set(idx, gift));
+      }
+      giftsMapRef.current = map;
+
+      const firstGift = map.get(0);
+      if (firstGift) setSelectedGift({ ...firstGift });
+      syncInstancedMeshes();
+    };
+
+    loadShowcase();
+    return () => {
+      cancelled = true;
+    };
+  }, [syncInstancedMeshes]);
+
+  // Живые события Ёлки: полёт Северной Совы после Двойного Рукопожатия
+  useEffect(() => {
+    const disconnect = connectTreeEvents((event, data) => {
+      if (event === "CELESTIAL_OWL_FLIGHT") {
+        spawnOwlRef.current?.(data);
+      }
+    });
+    return disconnect;
+  }, []);
+
+  useEffect(() => {
+    const ring = selectionRingRef.current;
+    if (!ring) return;
+    if (!selectedGift) {
+      ring.visible = false;
+      return;
+    }
+    const { branch_angle_rad, radius_offset, y_height } =
+      selectedGift.coordinates;
+    const worldY = 60.0 - y_height;
+    const worldX = Math.cos(branch_angle_rad) * radius_offset;
+    const worldZ = Math.sin(branch_angle_rad) * radius_offset;
+    ring.position.set(worldX, worldY - 0.34 * GIFT_ORB_SCALE, worldZ);
+    ring.scale.setScalar(GIFT_ORB_SCALE);
+    ring.visible = true;
+  }, [selectedGift]);
+
+  useEffect(() => {
+    const container = mountRef.current;
+    if (!container) return;
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color("#040914");
+    scene.fog = new THREE.FogExp2("#050d1a", 0.011);
+
+    const camera = new THREE.PerspectiveCamera(
+      48,
+      container.clientWidth / container.clientHeight,
+      0.1,
+      320
+    );
+
+    const renderer = new THREE.WebGLRenderer({
+      antialias: true,
+      powerPreference: "high-performance",
+    });
+    renderer.setSize(container.clientWidth, container.clientHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.25;
+    container.appendChild(renderer.domElement);
+
+    // Постобработка: мягкое сияние (bloom) для гирлянды, звезды, свечей и авроры
+    const composer = new EffectComposer(renderer);
+    composer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    composer.setSize(container.clientWidth, container.clientHeight);
+    composer.addPass(new RenderPass(scene, camera));
+    const bloomPass = new UnrealBloomPass(
+      new THREE.Vector2(container.clientWidth, container.clientHeight),
+      0.35,
+      0.45,
+      0.85
+    );
+    composer.addPass(bloomPass);
+    composer.addPass(new OutputPass());
+
+    const skyGeo = new THREE.SphereGeometry(210, 48, 32);
+    const auroraUniforms = {
+      uTime: { value: 0 },
+      uTopColor: { value: new THREE.Color("#040b1c") },
+      uBottomColor: { value: new THREE.Color("#141e38") },
+      uAuroraStrength: { value: 1.0 },
+    };
+    const skyMat = new THREE.ShaderMaterial({
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform float uTime;
+        uniform vec3 uTopColor;
+        uniform vec3 uBottomColor;
+        uniform float uAuroraStrength;
+        varying vec2 vUv;
+        void main() {
+          vec3 col = mix(uBottomColor, uTopColor, smoothstep(0.0, 0.85, vUv.y));
+          float wave1 = sin(vUv.x * 12.0 + uTime * 0.45) * 0.035;
+          float wave2 = cos(vUv.x * 20.0 - uTime * 0.3) * 0.025;
+          float band = smoothstep(0.42 + wave1, 0.58 + wave1, vUv.y) * (1.0 - smoothstep(0.62 + wave2, 0.82 + wave2, vUv.y));
+          vec3 auroraCol = mix(vec3(0.06, 0.72, 0.51), vec3(0.55, 0.25, 0.92), sin(vUv.x * 6.28 + uTime * 0.2) * 0.5 + 0.5);
+          col += auroraCol * band * 0.42 * uAuroraStrength;
+          gl_FragColor = vec4(col, 1.0);
+        }
+      `,
+      uniforms: auroraUniforms,
+      side: THREE.BackSide,
+      depthWrite: false,
+    });
+    const skyDome = new THREE.Mesh(skyGeo, skyMat);
+    scene.add(skyDome);
+
+    const hemiLight = new THREE.HemisphereLight("#93c5fd", "#1e1b4b", 1.65);
+    scene.add(hemiLight);
+    const starPointLight = new THREE.PointLight("#fde047", 7.2, 72);
+    starPointLight.position.set(0, 62.2, 0);
+    scene.add(starPointLight);
+    const dirLight = new THREE.DirectionalLight("#fef08a", 2.4);
+    dirLight.position.set(28, 85, 34);
+    dirLight.castShadow = true;
+    scene.add(dirLight);
+
+    // ========================================================================
+    // ВЕЛИЧЕСТВЕННАЯ ВСЕМИРНАЯ ЕЛЬ v15.0 (ПЫШНАЯ МНОГОСЛОЙНАЯ ХВОЯ И ШИШКИ)
+    // ========================================================================
+    const trunkGeo = new THREE.CylinderGeometry(0.45, 4.6, 120, 20);
+    const trunkMat = new THREE.MeshStandardMaterial({
+      color: "#2c1608",
+      roughness: 0.92,
+    });
+    const trunkMesh = new THREE.Mesh(trunkGeo, trunkMat);
+    trunkMesh.position.set(0, -16, 0);
+    scene.add(trunkMesh);
+
+    // 1. Внутреннее густое ядро из каскадных волнистых ярусов хвои со снежной кромкой
+    // (крона достаёт до снежного поля, но не зарывается глубоко под землю)
+    const CROWN_TIERS = 35;
+    const coreCrownGroup = new THREE.Group();
+    const crownMat = new THREE.MeshStandardMaterial({
+      color: "#ffffff",
+      roughness: 0.82,
+      flatShading: true,
+      vertexColors: true,
+    });
+    const forestPineMat = new THREE.MeshStandardMaterial({
+      color: "#064e3b",
+      roughness: 0.8,
+      flatShading: true,
+    });
+    const tierSnowMat = new THREE.MeshStandardMaterial({
+      color: "#e2e8f0",
+      roughness: 0.52,
+      flatShading: true,
+    });
+
+    for (let tier = 0; tier < CROWN_TIERS; tier++) {
+      const yHeight = tier * 1.85;
+      const worldY = 59.8 - yHeight;
+      const baseR = getConeEnvelopeRadius(yHeight + 1.2) * 0.88;
+
+      // Основной зубчатый колокол яруса (частые зубцы — рваная хвойная кромка)
+      const coneG = new THREE.ConeGeometry(baseR, 3.2, 26, 3);
+      const posAttr = coneG.attributes.position;
+      for (let vi = 0; vi < posAttr.count; vi++) {
+        const vx = posAttr.getX(vi);
+        const vy = posAttr.getY(vi);
+        const vz = posAttr.getZ(vi);
+        if (vy < 0.2) {
+          const angle = Math.atan2(vz, vx);
+          const ruffle =
+            1.0 +
+            0.1 * Math.sin(angle * 13.0 + tier * 1.3) +
+            0.05 * Math.sin(angle * 5.0 - tier * 0.7);
+          posAttr.setX(vi, vx * ruffle);
+          posAttr.setZ(vi, vz * ruffle);
+          posAttr.setY(
+            vi,
+            vy + 0.16 * Math.cos(angle * 13.0) + 0.08 * Math.cos(angle * 5.0)
+          );
+        }
+      }
+      coneG.computeVertexNormals();
+
+      // Градиент хвои: тень у верха яруса, сочная зелень и инеистая кромка внизу
+      const colorArr = new Float32Array(posAttr.count * 3);
+      const topTint = new THREE.Color(tier % 2 === 0 ? "#03251d" : "#053228");
+      const edgeTint = new THREE.Color(tier % 2 === 0 ? "#0a6049" : "#0d7358");
+      const frostTint = new THREE.Color("#bfe8dc");
+      const gradColor = new THREE.Color();
+      for (let vi = 0; vi < posAttr.count; vi++) {
+        const vy = posAttr.getY(vi);
+        const tTop = THREE.MathUtils.clamp((vy + 1.6) / 3.2, 0, 1);
+        gradColor.lerpColors(edgeTint, topTint, tTop);
+        if (vy < 0.2) gradColor.lerp(frostTint, 0.22);
+        colorArr[vi * 3] = gradColor.r;
+        colorArr[vi * 3 + 1] = gradColor.g;
+        colorArr[vi * 3 + 2] = gradColor.b;
+      }
+      coneG.setAttribute("color", new THREE.BufferAttribute(colorArr, 3));
+
+      const coneM = new THREE.Mesh(coneG, crownMat);
+      coneM.position.set(0, worldY, 0);
+      coneM.rotation.y = tier * 0.38;
+      coneM.castShadow = true;
+      coneM.receiveShadow = true;
+      coreCrownGroup.add(coneM);
+
+      // Снежная бахрома по краю яруса
+      const snowSkirtG = new THREE.ConeGeometry(baseR * 0.96, 1.15, 22);
+      const snowSkirtM = new THREE.Mesh(snowSkirtG, tierSnowMat);
+      snowSkirtM.position.set(0, worldY - 0.55, 0);
+      snowSkirtM.rotation.y = tier * 0.38 + 0.15;
+      coreCrownGroup.add(snowSkirtM);
+    }
+    scene.add(coreCrownGroup);
+
+    // 2. 1350 пушистых веерных еловых лап (5-лучевые кластеры вокруг каждого слота и между ними)
+    const totalBoughs = 300;
+    const SUB_FRONDS = 7;
+    const totalSubFronds = totalBoughs * SUB_FRONDS;
+
+    const boughGeo = new THREE.ConeGeometry(0.95, 2.85, 7);
+    boughGeo.rotateX(Math.PI * 0.44);
+    const boughMat = new THREE.MeshStandardMaterial({
+      color: "#ffffff",
+      roughness: 0.7,
+      flatShading: true,
+    });
+    const boughInstanced = new THREE.InstancedMesh(
+      boughGeo,
+      boughMat,
+      totalSubFronds
+    );
+    boughInstanced.castShadow = true;
+    boughInstanced.receiveShadow = true;
+
+    // Пухлые снежные подушки на лапах
+    const snowCapGeo = new THREE.ConeGeometry(1.08, 1.55, 8);
+    snowCapGeo.rotateX(Math.PI * 0.44);
+    const snowCapMat = new THREE.MeshStandardMaterial({
+      color: "#f1f5f9",
+      roughness: 0.45,
+      metalness: 0.05,
+      flatShading: true,
+    });
+    const snowCapInstanced = new THREE.InstancedMesh(
+      snowCapGeo,
+      snowCapMat,
+      totalBoughs
+    );
+
+    // Настоящие лесные шишки под еловыми лапами
+    const pineconesCount = 420;
+    const pineconeGeo = new THREE.DodecahedronGeometry(0.24, 1);
+    pineconeGeo.scale(0.82, 1.45, 0.82);
+    const pineconeMat = new THREE.MeshStandardMaterial({
+      color: "#5c2d16",
+      roughness: 0.8,
+      metalness: 0.1,
+    });
+    const pineconeInstanced = new THREE.InstancedMesh(
+      pineconeGeo,
+      pineconeMat,
+      pineconesCount
+    );
+
+    const boughDummy = new THREE.Object3D();
+    const boughColor = new THREE.Color();
+    const sparkleTipArr = [];
+    const pinePalette = ["#065f46", "#047857", "#064e3b", "#0f766e", "#059669"];
+    let frondCursor = 0;
+
+    for (let i = 0; i < totalBoughs; i++) {
+      const coords = computeFibonacciSpiralSlot(i);
+      const wy = 60.0 - coords.y_height;
+      const r = Math.max(0.85, coords.radius_offset - 3.2);
+      const baseAngle = coords.branch_angle_rad;
+
+      // Веер из 7 густых хвойных побегов на каждой ветви
+      const midF = (SUB_FRONDS - 1) / 2;
+      for (let f = 0; f < SUB_FRONDS; f++) {
+        const spread = (f - midF) * 0.105;
+        const localAngle = baseAngle + spread;
+        const reach = r + (f === midF ? 0.35 : f % 2 === 0 ? 0.12 : -0.15);
+        const wx = Math.cos(localAngle) * reach;
+        const wz = Math.sin(localAngle) * reach;
+        const liftY = wy - 0.42 + (f === midF ? 0.08 : -0.06);
+
+        boughDummy.position.set(wx, liftY, wz);
+        boughDummy.lookAt(
+          Math.cos(localAngle) * (reach + 5.5),
+          liftY - 1.05,
+          Math.sin(localAngle) * (reach + 5.5)
+        );
+        const scaleW = 0.85 + (i % 5) * 0.08 + (f === midF ? 0.25 : 0);
+        boughDummy.scale.set(scaleW, 0.58, 0.85);
+        boughDummy.updateMatrix();
+        boughInstanced.setMatrixAt(frondCursor, boughDummy.matrix);
+
+        boughColor.set(pinePalette[(i + f) % pinePalette.length]);
+        boughInstanced.setColorAt(frondCursor, boughColor);
+        frondCursor++;
+
+        sparkleTipArr.push(
+          Math.cos(localAngle) * (reach + 1.25),
+          liftY - 0.18,
+          Math.sin(localAngle) * (reach + 1.25)
+        );
+      }
+
+      // Снежная шапка поверх центральной лапы
+      boughDummy.position.set(
+        Math.cos(baseAngle) * (r + 0.34),
+        wy - 0.28,
+        Math.sin(baseAngle) * (r + 0.34)
+      );
+      boughDummy.lookAt(
+        Math.cos(baseAngle) * (r + 5.0),
+        wy - 0.88,
+        Math.sin(baseAngle) * (r + 5.0)
+      );
+      boughDummy.scale.set(1.05, 0.42, 1.08);
+      boughDummy.updateMatrix();
+      snowCapInstanced.setMatrixAt(i, boughDummy.matrix);
+    }
+
+    // Развешиваем 420 шишек на ветвях
+    for (let p = 0; p < pineconesCount; p++) {
+      const yH = (p * 0.18) % 72;
+      const wy = 59.5 - yH;
+      const envR = getConeEnvelopeRadius(yH) * 0.94;
+      const ang = p * GOLDEN_ANGLE_RAD * 1.7;
+      boughDummy.position.set(
+        Math.cos(ang) * envR,
+        wy - 0.58,
+        Math.sin(ang) * envR
+      );
+      boughDummy.rotation.set(0.2, ang, 0.15);
+      boughDummy.scale.setScalar(0.85 + (p % 3) * 0.2);
+      boughDummy.updateMatrix();
+      pineconeInstanced.setMatrixAt(p, boughDummy.matrix);
+    }
+
+    boughInstanced.instanceMatrix.needsUpdate = true;
+    if (boughInstanced.instanceColor)
+      boughInstanced.instanceColor.needsUpdate = true;
+    snowCapInstanced.instanceMatrix.needsUpdate = true;
+    pineconeInstanced.instanceMatrix.needsUpdate = true;
+
+    scene.add(boughInstanced);
+    scene.add(snowCapInstanced);
+    scene.add(pineconeInstanced);
+
+    // ========================================================================
+    // МЕРЦАЮЩИЙ ИНЕЙ НА КОНЕЧКАХ ХВОИ (3D-ИСКРЫ С TWINKLE-ШЕЙДЕРОМ)
+    // ========================================================================
+    const sparklePosArr = [...sparkleTipArr];
+    const EXTRA_CROWN_SPARKLES = 550;
+    for (let i = 0; i < EXTRA_CROWN_SPARKLES; i++) {
+      const yH = (i * 0.13) % 72;
+      const envR = getConeEnvelopeRadius(yH) * (0.55 + Math.random() * 0.42);
+      const ang = i * GOLDEN_ANGLE_RAD * 2.3;
+      sparklePosArr.push(
+        Math.cos(ang) * envR,
+        59.6 - yH + Math.random() * 0.6,
+        Math.sin(ang) * envR
+      );
+    }
+    const sparkleCount = sparklePosArr.length / 3;
+    const sparkleGeo = new THREE.BufferGeometry();
+    sparkleGeo.setAttribute(
+      "position",
+      new THREE.BufferAttribute(new Float32Array(sparklePosArr), 3)
+    );
+    const sparklePhase = new Float32Array(sparkleCount);
+    const sparkleSize = new Float32Array(sparkleCount);
+    for (let i = 0; i < sparkleCount; i++) {
+      sparklePhase[i] = Math.random() * Math.PI * 2;
+      sparkleSize[i] = 0.28 + Math.random() * 0.5;
+    }
+    sparkleGeo.setAttribute("aPhase", new THREE.BufferAttribute(sparklePhase, 1));
+    sparkleGeo.setAttribute("aSize", new THREE.BufferAttribute(sparkleSize, 1));
+    const sparkleMat = new THREE.ShaderMaterial({
+      uniforms: { uTime: { value: 0 } },
+      vertexShader: `
+        attribute float aPhase;
+        attribute float aSize;
+        uniform float uTime;
+        varying float vTwinkle;
+        void main() {
+          vTwinkle = 0.5 + 0.5 * sin(uTime * 2.1 + aPhase * 9.0);
+          vec4 mv = modelViewMatrix * vec4(position, 1.0);
+          gl_PointSize = aSize * (1100.0 / max(1.0, -mv.z)) * (0.55 + 0.9 * vTwinkle);
+          gl_Position = projectionMatrix * mv;
+        }
+      `,
+      fragmentShader: `
+        varying float vTwinkle;
+        void main() {
+          vec2 uv = gl_PointCoord - 0.5;
+          float d = length(uv);
+          float core = smoothstep(0.5, 0.0, d);
+          float rays = max(0.0, 1.0 - abs(uv.x) * 9.0) + max(0.0, 1.0 - abs(uv.y) * 9.0);
+          float a = (core * core + rays * 0.35) * (0.25 + 0.75 * vTwinkle);
+          vec3 col = mix(vec3(0.72, 0.9, 1.0), vec3(1.0, 0.96, 0.78), vTwinkle);
+          gl_FragColor = vec4(col, a);
+        }
+      `,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    const frostSparkles = new THREE.Points(sparkleGeo, sparkleMat);
+    frostSparkles.frustumCulled = false;
+    scene.add(frostSparkles);
+
+    // ========================================================================
+    // ПРАЗДНИЧНЫЕ ДЕТАЛИ: СТЕКЛЯННЫЕ ШАРЫ, СОСУЛЬКИ, КАЛИНА И СУГРОБКИ
+    // ========================================================================
+    const decorGroup = new THREE.Group();
+    scene.add(decorGroup);
+
+    // 140 аккуратных игрушек — фон для подарков, не конкурент им
+    const ORNAMENT_COUNT = 140;
+    const ornamentGeo = new THREE.SphereGeometry(0.18, 12, 10);
+    const ornamentMat = new THREE.MeshStandardMaterial({
+      metalness: 0.55,
+      roughness: 0.18,
+    });
+    const ornamentInstanced = new THREE.InstancedMesh(
+      ornamentGeo,
+      ornamentMat,
+      ORNAMENT_COUNT
+    );
+    ornamentInstanced.castShadow = true;
+    const ornamentPalette = [
+      "#e11d48",
+      "#fbbf24",
+      "#38bdf8",
+      "#f8fafc",
+      "#a855f7",
+      "#34d399",
+    ];
+    const ornamentColor = new THREE.Color();
+    for (let i = 0; i < ORNAMENT_COUNT; i++) {
+      const coords = computeFibonacciSpiralSlot(i + 3);
+      const wy = 60.0 - coords.y_height;
+      const r = Math.max(0.8, coords.radius_offset - 0.55);
+      const ang = coords.branch_angle_rad + 0.35;      boughDummy.position.set(
+        Math.cos(ang) * r,
+        wy - 0.5,
+        Math.sin(ang) * r
+      );
+      boughDummy.rotation.set(0, 0, 0);
+      boughDummy.scale.setScalar(0.85 + (i % 4) * 0.12);
+      boughDummy.updateMatrix();
+      ornamentInstanced.setMatrixAt(i, boughDummy.matrix);
+      ornamentColor.set(ornamentPalette[i % ornamentPalette.length]);
+      ornamentInstanced.setColorAt(i, ornamentColor);
+    }
+    ornamentInstanced.instanceMatrix.needsUpdate = true;
+    if (ornamentInstanced.instanceColor)
+      ornamentInstanced.instanceColor.needsUpdate = true;
+    decorGroup.add(ornamentInstanced);
+
+    // 264 ледяных сосулек под снежными карнизами ярусов
+    const ICICLE_COUNT = 210;
+    const icicleGeo = new THREE.ConeGeometry(0.06, 0.55, 6);
+    icicleGeo.rotateX(Math.PI);
+    const icicleMat = new THREE.MeshStandardMaterial({
+      color: "#dbeafe",
+      transparent: true,
+      opacity: 0.62,
+      roughness: 0.08,
+      metalness: 0.1,
+      emissive: "#7dd3fc",
+      emissiveIntensity: 0.14,
+    });
+    const icicleInstanced = new THREE.InstancedMesh(
+      icicleGeo,
+      icicleMat,
+      ICICLE_COUNT
+    );
+    let icicleIdx = 0;
+    for (let tier = 0; tier < CROWN_TIERS; tier++) {
+      const yHeight = tier * 1.85;
+      const worldY = 59.8 - yHeight;
+      const baseR = getConeEnvelopeRadius(yHeight + 1.2) * 0.88;
+      for (let k = 0; k < 6; k++) {
+        const ang = tier * 0.38 + k * 1.05 + (k % 2) * 0.2;
+        const rr = baseR * (0.82 + (k % 3) * 0.06);
+        boughDummy.position.set(
+          Math.cos(ang) * rr,
+          worldY - 1.32,
+          Math.sin(ang) * rr
+        );
+        boughDummy.rotation.set(0, 0, k % 2 ? 0.06 : -0.05);
+        boughDummy.scale.setScalar(0.7 + (k % 3) * 0.3);
+        boughDummy.updateMatrix();
+        icicleInstanced.setMatrixAt(icicleIdx, boughDummy.matrix);
+        icicleIdx++;
+      }
+    }
+    icicleInstanced.instanceMatrix.needsUpdate = true;
+    decorGroup.add(icicleInstanced);
+
+    // 300 ягод калины — красные кисти на ветвях
+    const BERRY_COUNT = 300;
+    const berryGeo = new THREE.SphereGeometry(0.085, 8, 6);
+    const berryMat = new THREE.MeshStandardMaterial({
+      color: "#dc2626",
+      roughness: 0.35,
+      emissive: "#7f1d1d",
+      emissiveIntensity: 0.35,
+    });
+    const berryInstanced = new THREE.InstancedMesh(
+      berryGeo,
+      berryMat,
+      BERRY_COUNT
+    );
+    for (let i = 0; i < BERRY_COUNT; i++) {
+      const cluster = Math.floor(i / 5);
+      const coords = computeFibonacciSpiralSlot(cluster * 3 + 1);
+      const wy = 60.0 - coords.y_height;
+      const r = Math.max(0.7, coords.radius_offset - 1.1);
+      const ang = coords.branch_angle_rad + (i % 5) * 0.09;
+      const jx = ((i * 37) % 17) / 17 - 0.5;
+      const jy = ((i * 53) % 11) / 11 - 0.5;
+      const jz = ((i * 29) % 19) / 19 - 0.5;
+      boughDummy.position.set(
+        Math.cos(ang) * r + jx * 0.22,
+        wy - 0.3 + jy * 0.12,
+        Math.sin(ang) * r + jz * 0.22
+      );
+      boughDummy.rotation.set(0, 0, 0);
+      boughDummy.scale.setScalar(0.8 + (i % 3) * 0.18);
+      boughDummy.updateMatrix();
+      berryInstanced.setMatrixAt(i, boughDummy.matrix);
+    }
+    berryInstanced.instanceMatrix.needsUpdate = true;
+    decorGroup.add(berryInstanced);
+
+    // 240 мягких сугробков на лапах
+    const PUFF_COUNT = 240;
+    const puffGeo = new THREE.SphereGeometry(0.3, 10, 8);
+    puffGeo.scale(1.15, 0.5, 1.15);
+    const puffMat = new THREE.MeshStandardMaterial({
+      color: "#f8fafc",
+      roughness: 0.55,
+      flatShading: true,
+    });
+    const puffInstanced = new THREE.InstancedMesh(
+      puffGeo,
+      puffMat,
+      PUFF_COUNT
+    );
+    for (let i = 0; i < PUFF_COUNT; i++) {
+      const cluster = Math.floor(i / 2);
+      const coords = computeFibonacciSpiralSlot(cluster * 2 + 4);
+      const wy = 60.0 - coords.y_height;
+      const r = Math.max(0.7, coords.radius_offset - 1.4);
+      const ang = coords.branch_angle_rad + (i % 2) * 0.25;
+      boughDummy.position.set(
+        Math.cos(ang) * r,
+        wy - 0.1 + (i % 2) * 0.1,
+        Math.sin(ang) * r
+      );
+      boughDummy.rotation.set(0, ang, 0);
+      boughDummy.scale.setScalar(0.75 + (i % 4) * 0.14);
+      boughDummy.updateMatrix();
+      puffInstanced.setMatrixAt(i, boughDummy.matrix);
+    }
+    puffInstanced.instanceMatrix.needsUpdate = true;
+    decorGroup.add(puffInstanced);
+
+    // ========================================================================
+    // РОЖДЕСТВЕНСКАЯ ТЁПЛАЯ ГИРЛЯНДА (360 СВЕТЯЩИХСЯ ОГОНЬКОВ ПО СПИРАЛИ)
+    // ========================================================================
+    const GARLAND_BULBS = 360;
+    const bulbGeo = new THREE.SphereGeometry(0.21, 10, 10);
+    const bulbMat = new THREE.MeshBasicMaterial({
+      color: "#ffffff",
+      transparent: true,
+      opacity: 0.96,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      fog: false,
+    });
+    const garlandInstanced = new THREE.InstancedMesh(
+      bulbGeo,
+      bulbMat,
+      GARLAND_BULBS
+    );
+    const garlandPalette = [
+      new THREE.Color("#fbbf24"), // Тёплое рождественское золото
+      new THREE.Color("#ef4444"), // Праздничный рубин
+      new THREE.Color("#10b981"), // Изумрудная хвоя
+      new THREE.Color("#fef08a"), // Сливочный огонёк
+      new THREE.Color("#38bdf8"), // Морозный лазурит
+    ];
+    const bulbDummy = new THREE.Object3D();
+    const bulbMeta = [];
+    for (let i = 0; i < GARLAND_BULBS; i++) {
+      const yH = i * 0.19;
+      const worldY = 60.2 - yH;
+      const envR = getConeEnvelopeRadius(yH) * 1.02;
+      const angle = i * 0.42;
+      const wx = Math.cos(angle) * envR;
+      const wz = Math.sin(angle) * envR;
+      bulbDummy.position.set(wx, worldY, wz);
+      bulbDummy.scale.setScalar(1);
+      bulbDummy.updateMatrix();
+      garlandInstanced.setMatrixAt(i, bulbDummy.matrix);
+      garlandInstanced.setColorAt(i, garlandPalette[i % garlandPalette.length]);
+      bulbMeta.push({ wx, worldY, wz, phase: i * 0.65 });
+    }
+    garlandInstanced.instanceMatrix.needsUpdate = true;
+    if (garlandInstanced.instanceColor)
+      garlandInstanced.instanceColor.needsUpdate = true;
+    scene.add(garlandInstanced);
+
+    // Мягкие ореолы вокруг лампочек с «бегущей» по ёлке волной мерцания
+    const haloGeo = new THREE.BufferGeometry();
+    const haloPos = new Float32Array(GARLAND_BULBS * 3);
+    const haloPhase = new Float32Array(GARLAND_BULBS);
+    const haloWave = new Float32Array(GARLAND_BULBS);
+    for (let i = 0; i < GARLAND_BULBS; i++) {
+      const bm = bulbMeta[i];
+      haloPos[i * 3] = bm.wx;
+      haloPos[i * 3 + 1] = bm.worldY;
+      haloPos[i * 3 + 2] = bm.wz;
+      haloPhase[i] = bm.phase;
+      haloWave[i] = i * 0.19;
+    }
+    haloGeo.setAttribute("position", new THREE.BufferAttribute(haloPos, 3));
+    haloGeo.setAttribute("aPhase", new THREE.BufferAttribute(haloPhase, 1));
+    haloGeo.setAttribute("aWave", new THREE.BufferAttribute(haloWave, 1));
+    const garlandHaloMat = new THREE.ShaderMaterial({
+      uniforms: {
+        uTime: { value: 0 },
+        uGlow: { value: createRadialGlowTexture() },
+      },
+      vertexShader: `
+        attribute float aPhase;
+        attribute float aWave;
+        uniform float uTime;
+        varying float vGlow;
+        void main() {
+          float run = 0.5 + 0.5 * sin(uTime * 1.6 - aWave * 0.5);
+          float twinkle = 0.5 + 0.5 * sin(uTime * 3.4 + aPhase);
+          vGlow = 0.35 + 0.65 * run * (0.6 + 0.4 * twinkle);
+          vec4 mv = modelViewMatrix * vec4(position, 1.0);
+          gl_PointSize = 1.25 * (1100.0 / max(1.0, -mv.z)) * (0.7 + 0.5 * vGlow);
+          gl_Position = projectionMatrix * mv;
+        }
+      `,
+      fragmentShader: `
+        uniform sampler2D uGlow;
+        varying float vGlow;
+        void main() {
+          vec4 tex = texture2D(uGlow, gl_PointCoord);
+          gl_FragColor = vec4(tex.rgb, tex.a * vGlow * 0.55);
+        }
+      `,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    const garlandHalos = new THREE.Points(haloGeo, garlandHaloMat);
+    garlandHalos.frustumCulled = false;
+    scene.add(garlandHalos);
+
+    // ========================================================================
+    // ЗАСНЕЖЕННАЯ РОЖДЕСТВЕНСКАЯ ПОЛЯНА И ВИКТОРИАНСКИЕ ФОНАРИ У ПОДНОЖИЯ
+    // ========================================================================
+    const clearingGroup = new THREE.Group();
+    const groundY = -4.0;
+    const snowFieldGeo = new THREE.CylinderGeometry(42, 46, 2.6, 36);
+    const snowFieldMat = new THREE.MeshStandardMaterial({
+      color: "#f1f5f9",
+      roughness: 0.65,
+      metalness: 0.08,
+    });
+    const snowFieldMesh = new THREE.Mesh(snowFieldGeo, snowFieldMat);
+    snowFieldMesh.position.set(0, groundY, 0);
+    snowFieldMesh.receiveShadow = true;
+    clearingGroup.add(snowFieldMesh);
+
+    // 4 старинных рождественских фонаря с тёплым светом и подарки в сугробах
+    for (let lIdx = 0; lIdx < 4; lIdx++) {
+      const lAngle = (lIdx * Math.PI) / 2 + Math.PI / 4;
+      const lRadius = 21.5;
+      const lx = Math.cos(lAngle) * lRadius;
+      const lz = Math.sin(lAngle) * lRadius;
+
+      const postMesh = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.16, 0.24, 5.5, 10),
+        new THREE.MeshStandardMaterial({
+          color: "#1e293b",
+          metalness: 0.7,
+          roughness: 0.3,
+        })
+      );
+      postMesh.position.set(lx, groundY + 3.8, lz);
+      clearingGroup.add(postMesh);
+
+      const lanternGlass = new THREE.Mesh(
+        new THREE.OctahedronGeometry(0.65, 1),
+        new THREE.MeshBasicMaterial({ color: "#fde047", fog: false })
+      );
+      lanternGlass.position.set(lx, groundY + 6.7, lz);
+      clearingGroup.add(lanternGlass);
+
+      const lanternLight = new THREE.PointLight("#fb923c", 3.2, 24);
+      lanternLight.position.set(lx, groundY + 6.5, lz);
+      clearingGroup.add(lanternLight);
+    }
+
+    // Окружающий сказочный рождественский лес (36 заснеженных елей вокруг поляны)
+    for (let tIdx = 0; tIdx < 36; tIdx++) {
+      const tAngle = (tIdx / 36) * Math.PI * 2 + (tIdx % 2) * 0.08;
+      const tDist = 29.0 + (tIdx % 5) * 4.2;
+      const tx = Math.cos(tAngle) * tDist;
+      const tz = Math.sin(tAngle) * tDist;
+      const treeScale = 0.85 + (tIdx % 4) * 0.32;
+
+      for (let layer = 0; layer < 3; layer++) {
+        const coneR = (3.2 - layer * 0.75) * treeScale;
+        const coneH = (5.2 - layer * 0.8) * treeScale;
+        const treeLayer = new THREE.Mesh(
+          new THREE.ConeGeometry(coneR, coneH, 9),
+          layer === 2 ? snowCapMat : forestPineMat
+        );
+        treeLayer.position.set(
+          tx,
+          groundY + 2.5 + layer * 2.8 * treeScale,
+          tz
+        );
+        treeLayer.rotation.y = tIdx + layer;
+        clearingGroup.add(treeLayer);
+      }
+    }
+    scene.add(clearingGroup);
+
+    // ========================================================================
+    // НАСТОЯЩИЙ ТРЁХМЕРНЫЙ СНЕГОПАД (2 СЛОЯ В THREE.JS С FOG: FALSE)
+    // ========================================================================
+    // Слой A: 700 объёмных 3D-кристаллов снега (InstancedMesh), кружащихся прямо вокруг камеры
+    const SNOW_3D_COUNT = 700;
+    const snowCrystalGeo = new THREE.OctahedronGeometry(0.17, 0);
+    const snowCrystalMat = new THREE.MeshBasicMaterial({
+      color: "#ffffff",
+      transparent: true,
+      opacity: 0.92,
+      fog: false,
+    });
+    const snowCrystalInstanced = new THREE.InstancedMesh(
+      snowCrystalGeo,
+      snowCrystalMat,
+      SNOW_3D_COUNT
+    );
+    snowCrystalInstanced.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    const snow3DData = [];
+    const snowCrystalColor = new THREE.Color();
+    for (let i = 0; i < SNOW_3D_COUNT; i++) {
+      const radius = 2.5 + Math.random() * 28.0;
+      const angle = Math.random() * Math.PI * 2;
+      const yOffset = (Math.random() - 0.5) * 34.0;
+      const speedY = 1.6 + Math.random() * 2.4;
+      const scale = 0.45 + Math.random() * 0.95;
+      snow3DData.push({
+        radius,
+        angle,
+        yOffset,
+        speedY,
+        scale,
+        phase: Math.random() * Math.PI * 2,
+        rotSpeed: (Math.random() - 0.5) * 2.5,
+      });
+      snowCrystalColor.set(
+        i % 7 === 0 ? "#fde047" : i % 5 === 0 ? "#bae6fd" : "#ffffff"
+      );
+      snowCrystalInstanced.setColorAt(i, snowCrystalColor);
+    }
+    if (snowCrystalInstanced.instanceColor)
+      snowCrystalInstanced.instanceColor.needsUpdate = true;
+    scene.add(snowCrystalInstanced);
+
+    // Слой B: 1300 крупных пушистых снежинок с текстурой боке (THREE.Points, fog: false)
+    const SNOW_PARTICLES_COUNT = 1300;
+    const snowPositions = new Float32Array(SNOW_PARTICLES_COUNT * 3);
+    const snowVel = [];
+    for (let i = 0; i < SNOW_PARTICLES_COUNT; i++) {
+      const r = 1.8 + Math.random() * 34.0;
+      const theta = Math.random() * Math.PI * 2;
+      snowPositions[i * 3] = Math.cos(theta) * r;
+      snowPositions[i * 3 + 1] = Math.random() * 90.0 - 15.0;
+      snowPositions[i * 3 + 2] = Math.sin(theta) * r;
+      snowVel.push({
+        vy: 1.5 + Math.random() * 2.4,
+        swirl: (Math.random() - 0.5) * 0.8,
+        phase: Math.random() * Math.PI * 2,
+      });
+    }
+    const snowBufferGeo = new THREE.BufferGeometry();
+    snowBufferGeo.setAttribute(
+      "position",
+      new THREE.BufferAttribute(snowPositions, 3)
+    );
+    const flakeTexture = createSnowflakeBokehTexture();
+    const snowPointsMat = new THREE.PointsMaterial({
+      size: 1.35,
+      map: flakeTexture,
+      transparent: true,
+      opacity: 0.95,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      sizeAttenuation: true,
+      fog: false,
+    });
+    const snowPointsSystem = new THREE.Points(snowBufferGeo, snowPointsMat);
+    scene.add(snowPointsSystem);
+
+    const pedestalGeo = new THREE.CylinderGeometry(0.48, 0.56, 0.24, 20);
+    const pedestalMat = new THREE.MeshStandardMaterial({
+      roughness: 0.4,
+      metalness: 0.35,
+    });
+    const pedestalInstanced = new THREE.InstancedMesh(
+      pedestalGeo,
+      pedestalMat,
+      MAX_INSTANCES
+    );
+    pedestalInstanced.castShadow = true;
+    pedestalInstanced.receiveShadow = true;
+    pedestalInstanced.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    scene.add(pedestalInstanced);
+    pedestalBaseMeshRef.current = pedestalInstanced;
+
+    const rimGeo = new THREE.TorusGeometry(0.49, 0.03, 10, 24);
+    const rimMat = new THREE.MeshStandardMaterial({
+      color: "#fbbf24",
+      metalness: 0.85,
+      roughness: 0.2,
+    });
+    const rimInstanced = new THREE.InstancedMesh(rimGeo, rimMat, MAX_INSTANCES);
+    rimInstanced.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    scene.add(rimInstanced);
+    pedestalRimMeshRef.current = rimInstanced;
+
+    const crownCapGeo = new THREE.CylinderGeometry(0.14, 0.18, 0.1, 14);
+    const crownCapInstanced = new THREE.InstancedMesh(
+      crownCapGeo,
+      rimMat,
+      MAX_INSTANCES
+    );
+    crownCapInstanced.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    scene.add(crownCapInstanced);
+    topCrownCapMeshRef.current = crownCapInstanced;
+
+    const unitVoxelGeo = new THREE.BoxGeometry(1, 1, 1);
+    const unitVoxelMat = new THREE.MeshStandardMaterial({
+      roughness: 0.28,
+      metalness: 0.15,
+    });
+    const globalVoxelsInstanced = new THREE.InstancedMesh(
+      unitVoxelGeo,
+      unitVoxelMat,
+      MAX_TOTAL_TREE_VOXELS
+    );
+    globalVoxelsInstanced.castShadow = true;
+    globalVoxelsInstanced.receiveShadow = true;
+    globalVoxelsInstanced.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    scene.add(globalVoxelsInstanced);
+    globalVoxelsMeshRef.current = globalVoxelsInstanced;
+
+    // Нимбы подарочных шаров: мягкий цветной свет в тон glitter-цвету дара —
+    // главный признак «это подарок», а не игрушка на ветке
+    const orbHaloGeo = new THREE.BufferGeometry();
+    orbHaloGeo.setAttribute(
+      "position",
+      new THREE.BufferAttribute(new Float32Array(MAX_INSTANCES * 3), 3).setUsage(
+        THREE.DynamicDrawUsage
+      )
+    );
+    orbHaloGeo.setAttribute(
+      "aColor",
+      new THREE.BufferAttribute(new Float32Array(MAX_INSTANCES * 3), 3).setUsage(
+        THREE.DynamicDrawUsage
+      )
+    );
+    orbHaloGeo.setAttribute(
+      "aSize",
+      new THREE.BufferAttribute(new Float32Array(MAX_INSTANCES), 1).setUsage(
+        THREE.DynamicDrawUsage
+      )
+    );
+    orbHaloGeo.setAttribute(
+      "aPhase",
+      new THREE.BufferAttribute(new Float32Array(MAX_INSTANCES), 1).setUsage(
+        THREE.DynamicDrawUsage
+      )
+    );
+    const orbHaloMat = new THREE.ShaderMaterial({
+      uniforms: {
+        uTime: { value: 0 },
+        uGlow: { value: createWhiteGlowTexture() },
+      },
+      vertexShader: `
+        attribute vec3 aColor;
+        attribute float aSize;
+        attribute float aPhase;
+        uniform float uTime;
+        varying vec3 vColor;
+        varying float vPulse;
+        void main() {
+          vColor = aColor;
+          vPulse = 0.78 + 0.22 * sin(uTime * 1.8 + aPhase);
+          vec4 mv = modelViewMatrix * vec4(position, 1.0);
+          gl_PointSize = aSize * (1100.0 / max(1.0, -mv.z)) * vPulse;
+          gl_Position = projectionMatrix * mv;
+        }
+      `,
+      fragmentShader: `
+        uniform sampler2D uGlow;
+        varying vec3 vColor;
+        varying float vPulse;
+        void main() {
+          vec4 tex = texture2D(uGlow, gl_PointCoord);
+          gl_FragColor = vec4(vColor, tex.a * 0.5 * vPulse);
+        }
+      `,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    const orbHalos = new THREE.Points(orbHaloGeo, orbHaloMat);
+    orbHalos.frustumCulled = false;
+    orbHalos.geometry.setDrawRange(0, 0);
+    scene.add(orbHalos);
+    orbHaloPointsRef.current = orbHalos;
+    orbHaloMatRef.current = orbHaloMat;
+
+    const glassGlobeGeo = new THREE.SphereGeometry(0.62, 24, 20);
+    const glassGlobeMat = new THREE.MeshPhysicalMaterial({
+      color: "#e0f2fe",
+      transparent: true,
+      opacity: 0.4,
+      roughness: 0.06,
+      metalness: 0.1,
+      clearcoat: 1.0,
+      depthWrite: false,
+    });
+    const glassGlobeInstanced = new THREE.InstancedMesh(
+      glassGlobeGeo,
+      glassGlobeMat,
+      MAX_INSTANCES
+    );
+    glassGlobeInstanced.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    scene.add(glassGlobeInstanced);
+    glassGlobeMeshRef.current = glassGlobeInstanced;
+
+    const flameInstanced = new THREE.InstancedMesh(
+      new THREE.ConeGeometry(0.16, 0.52, 10),
+      new THREE.MeshBasicMaterial({
+        color: "#fef08a",
+        transparent: true,
+        opacity: 0.95,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      }),
+      MAX_INSTANCES
+    );
+    scene.add(flameInstanced);
+    candleFlameMeshRef.current = flameInstanced;
+
+    const haloInstanced = new THREE.InstancedMesh(
+      new THREE.SphereGeometry(0.45, 10, 10),
+      new THREE.MeshBasicMaterial({
+        color: "#f59e0b",
+        transparent: true,
+        opacity: 0.42,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      }),
+      MAX_INSTANCES
+    );
+    scene.add(haloInstanced);
+    candleHaloMeshRef.current = haloInstanced;
+
+    const selRingMesh = new THREE.Mesh(
+      new THREE.TorusGeometry(0.75, 0.045, 12, 32),
+      new THREE.MeshBasicMaterial({
+        color: "#fde047",
+        blending: THREE.AdditiveBlending,
+      })
+    );
+    selRingMesh.geometry.rotateX(Math.PI / 2);
+    selRingMesh.visible = false;
+    scene.add(selRingMesh);
+    selectionRingRef.current = selRingMesh;
+
+    const topStarGroup = new THREE.Group();
+    topStarGroup.position.set(0, 61.8, 0);
+    const coreOctGeo = new THREE.OctahedronGeometry(1.45, 0);
+    const coreOctMat = new THREE.MeshBasicMaterial({
+      color: "#fef08a",
+      blending: THREE.AdditiveBlending,
+    });
+    const starCoreA = new THREE.Mesh(coreOctGeo, coreOctMat);
+    const starCoreB = new THREE.Mesh(coreOctGeo, coreOctMat);
+    starCoreB.rotation.y = Math.PI / 4;
+    starCoreB.rotation.z = Math.PI / 4;
+    topStarGroup.add(starCoreA, starCoreB);
+    scene.add(topStarGroup);
+
+    // Нимб вокруг верховой звезды
+    const starGlow = new THREE.Sprite(
+      new THREE.SpriteMaterial({
+        map: createRadialGlowTexture(),
+        color: "#fde047",
+        transparent: true,
+        opacity: 0.6,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        fog: false,
+      })
+    );
+    starGlow.scale.setScalar(9.5);
+    topStarGroup.add(starGlow);
+
+    syncInstancedMeshes();
+
+    const owlFlightsGroup = new THREE.Group();
+    scene.add(owlFlightsGroup);
+    const activeOwlFlights = [];
+
+    let scrollDepth = 9.5;
+    let isDragging = false;
+    let dragDistance = 0;
+    let prevPointerY = 0;
+    let prevPointerX = 0;
+    let manualAzimuthOffset = 0;
+    const clock = new THREE.Clock();
+
+    spawnOwlRef.current = (payload) => {
+      setOwlBanner(payload);
+      if (owlBannerTimeoutRef.current)
+        window.clearTimeout(owlBannerTimeoutRef.current);
+      owlBannerTimeoutRef.current = window.setTimeout(
+        () => setOwlBanner(null),
+        6500
+      );
+      musicBoxSynth.playOwlChime();
+
+      const centerCamY = 60.0 - scrollDepth;
+      const baseRadius = getConeEnvelopeRadius(scrollDepth) * 1.12;
+      const startAngle = scrollDepth * 0.18 + manualAzimuthOffset - 1.2;
+
+      const controlPoints = [];
+      for (let i = 0; i <= 8; i++) {
+        const t = i / 8;
+        const angle = startAngle + t * Math.PI * 2.5;
+        const r = baseRadius + 1.6 + Math.sin(t * Math.PI) * 3.5;
+        const y = centerCamY - 5.5 + t * 9.5 + Math.sin(t * Math.PI) * 3.8;
+        controlPoints.push(
+          new THREE.Vector3(Math.cos(angle) * r, y, Math.sin(angle) * r)
+        );
+      }
+
+      const curve = new THREE.CatmullRomCurve3(controlPoints);
+      const sampledPoints = curve.getPoints(180);
+      const lineGeo = new THREE.BufferGeometry().setFromPoints(sampledPoints);
+      lineGeo.setDrawRange(0, 2);
+
+      const lineMat = new THREE.LineBasicMaterial({
+        color: "#fde047",
+        transparent: true,
+        opacity: 0.95,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      });
+      const lineMesh = new THREE.Line(lineGeo, lineMat);
+      owlFlightsGroup.add(lineMesh);
+
+      const owlHeadMesh = new THREE.Mesh(
+        new THREE.OctahedronGeometry(0.48, 1),
+        new THREE.MeshBasicMaterial({ color: "#fff" })
+      );
+      owlHeadMesh.position.copy(sampledPoints[0]);
+      owlFlightsGroup.add(owlHeadMesh);
+
+      activeOwlFlights.push({
+        curve,
+        lineMesh,
+        lineMat,
+        owlHeadMesh,
+        totalPoints: 180,
+        startTime: clock.getElapsedTime(),
+        duration: 4.8,
+      });
+    };
+
+    const onWheel = (e) => {
+      e.preventDefault();
+      scrollTargetRef.current = Math.max(
+        0,
+        Math.min(MAX_SCROLL_DEPTH, scrollTargetRef.current + e.deltaY * 0.022)
+      );
+    };
+    const onMouseDown = (e) => {
+      isDragging = true;
+      dragDistance = 0;
+      prevPointerY = e.clientY;
+      prevPointerX = e.clientX;
+    };
+    const onMouseMove = (e) => {
+      if (!isDragging) return;
+      const dy = prevPointerY - e.clientY;
+      const dx = prevPointerX - e.clientX;
+      dragDistance += Math.abs(dy) + Math.abs(dx);
+      prevPointerY = e.clientY;
+      prevPointerX = e.clientX;
+      scrollTargetRef.current = Math.max(
+        0,
+        Math.min(MAX_SCROLL_DEPTH, scrollTargetRef.current + dy * 0.05)
+      );
+      manualAzimuthOffset += dx * 0.006;
+    };
+    const onMouseUp = () => {
+      isDragging = false;
+    };
+
+    // Полноценная поддержка сенсорного экрана (Touch-свайпы пальцем для вращения и полёта вдоль Ели)
+    const onTouchStart = (e) => {
+      if (!e.touches || e.touches.length === 0) return;
+      isDragging = true;
+      dragDistance = 0;
+      prevPointerX = e.touches[0].clientX;
+      prevPointerY = e.touches[0].clientY;
+    };
+    const onTouchMove = (e) => {
+      if (!isDragging || !e.touches || e.touches.length === 0) return;
+      if (e.cancelable) e.preventDefault();
+      const cx = e.touches[0].clientX;
+      const cy = e.touches[0].clientY;
+      const dy = prevPointerY - cy;
+      const dx = prevPointerX - cx;
+      dragDistance += Math.abs(dy) + Math.abs(dx);
+      prevPointerY = cy;
+      prevPointerX = cx;
+      scrollTargetRef.current = Math.max(
+        0,
+        Math.min(MAX_SCROLL_DEPTH, scrollTargetRef.current + dy * 0.065)
+      );
+      manualAzimuthOffset += dx * 0.008;
+    };
+    const onTouchEnd = () => {
+      isDragging = false;
+    };
+
+    const raycaster = new THREE.Raycaster();
+    const pointer = new THREE.Vector2();
+    const onClick = (e) => {
+      if (dragDistance > 10) return;
+      const rect = renderer.domElement.getBoundingClientRect();
+      const clientX = e.clientX ?? e.changedTouches?.[0]?.clientX ?? 0;
+      const clientY = e.clientY ?? e.changedTouches?.[0]?.clientY ?? 0;
+      pointer.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+      pointer.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+
+      raycaster.setFromCamera(pointer, camera);
+      const targets = [
+        glassGlobeMeshRef.current,
+        pedestalBaseMeshRef.current,
+      ].filter(Boolean);
+      const intersects = raycaster.intersectObjects(targets, false);
+
+      if (intersects.length > 0 && intersects[0].instanceId !== undefined) {
+        const instanceIdx = intersects[0].instanceId;
+        const seqNum = globeInstanceToSeqRef.current[instanceIdx];
+        if (seqNum !== undefined) {
+          const hitGift = giftsMapRef.current.get(seqNum);
+          if (hitGift) {
+            const prevSelected = selectedGiftRef.current;
+            if (prevSelected && prevSelected.id === hitGift.id) {
+              musicBoxSynth.toggleMelody(
+                hitGift.id,
+                hitGift.melody.tempo_bpm,
+                hitGift.melody.celesta_track,
+                hitGift.melody.harp_track,
+                hitGift.melody.cello_track,
+                hitGift.melody.flute_track,
+                hitGift.melody.drum_track
+              );
+            } else {
+              setSelectedGift({ ...hitGift });
+              musicBoxSynth.playMelody(
+                hitGift.melody.tempo_bpm,
+                hitGift.melody.celesta_track,
+                hitGift.melody.harp_track,
+                hitGift.melody.cello_track,
+                hitGift.melody.flute_track,
+                hitGift.melody.drum_track,
+                null,
+                hitGift.id
+              );
+            }
+          }
+        }
+      }
+    };
+
+    const domElem = renderer.domElement;
+    domElem.style.touchAction = "none";
+    domElem.addEventListener("wheel", onWheel, { passive: false });
+    domElem.addEventListener("mousedown", onMouseDown);
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+    domElem.addEventListener("touchstart", onTouchStart, { passive: true });
+    domElem.addEventListener("touchmove", onTouchMove, { passive: false });
+    window.addEventListener("touchend", onTouchEnd);
+    domElem.addEventListener("click", onClick);
+
+    let animFrameId;
+    const flameDummy = new THREE.Object3D();
+    const snowDummy = new THREE.Object3D();
+
+    const animate = () => {
+      animFrameId = requestAnimationFrame(animate);
+      const elapsed = clock.getElapsedTime();
+      const preset = weatherPresetRef.current;
+      const density = snowDensityRef.current;
+
+      // Применяем параметры выбранной Рождественской Погоды к небу, туману и свету
+      auroraUniforms.uTime.value = elapsed;
+      auroraUniforms.uTopColor.value.set(preset.skyTop);
+      auroraUniforms.uBottomColor.value.set(preset.skyBottom);
+      auroraUniforms.uAuroraStrength.value = preset.auroraStrength;
+      scene.background.set(preset.skyTop);
+      scene.fog.color.set(preset.fogColor);
+      hemiLight.color.set(preset.hemiSky);
+      hemiLight.groundColor.set(preset.hemiGround);
+      dirLight.color.set(preset.dirColor);
+      dirLight.intensity = preset.dirIntensity;
+
+      scrollDepth += (scrollTargetRef.current - scrollDepth) * 0.08;
+      const spiralAngle = scrollDepth * 0.18 + manualAzimuthOffset;
+      const currentConeRadius =
+        getConeEnvelopeRadius(scrollDepth) * 1.3 + 27.0;
+      const camY = 60.0 - scrollDepth;
+
+      camera.position.set(
+        Math.cos(spiralAngle) * currentConeRadius,
+        Math.max(camY + 1.9, MIN_CAMERA_Y),
+        Math.sin(spiralAngle) * currentConeRadius
+      );
+      camera.lookAt(0, camY - 1.1, 0);
+      skyDome.position.y = camY;
+      topStarGroup.rotation.y = elapsed * 0.85;
+
+      // Сияние: twinkle инея, волна гирлянды, нимб звезды и дыхание ветра
+      sparkleMat.uniforms.uTime.value = elapsed;
+      garlandHaloMat.uniforms.uTime.value = elapsed;
+      if (orbHaloMatRef.current) orbHaloMatRef.current.uniforms.uTime.value = elapsed;
+      starGlow.scale.setScalar(9.5 + Math.sin(elapsed * 2.6) * 1.2);
+      starGlow.material.opacity = 0.5 + 0.18 * Math.sin(elapsed * 3.1);
+      coreCrownGroup.rotation.z = Math.sin(elapsed * 0.55) * 0.0035;
+      coreCrownGroup.rotation.x = Math.cos(elapsed * 0.42) * 0.0025;
+      boughInstanced.rotation.z = coreCrownGroup.rotation.z;
+      snowCapInstanced.rotation.z = coreCrownGroup.rotation.z;
+      pineconeInstanced.rotation.z = coreCrownGroup.rotation.z;
+      frostSparkles.rotation.z = coreCrownGroup.rotation.z;
+      decorGroup.rotation.z = coreCrownGroup.rotation.z;
+      bloomPass.strength = 0.3 + preset.diamondSparkle * 0.22;
+
+      // Анимация мерцания 360 рождественских лампочек гирлянды
+      for (let i = 0; i < GARLAND_BULBS; i++) {
+        const bm = bulbMeta[i];
+        const pulse =
+          0.75 + 0.45 * Math.sin(elapsed * 4.2 + bm.phase);
+        bulbDummy.position.set(bm.wx, bm.worldY, bm.wz);
+        bulbDummy.scale.setScalar(pulse);
+        bulbDummy.updateMatrix();
+        garlandInstanced.setMatrixAt(i, bulbDummy.matrix);
+      }
+      garlandInstanced.instanceMatrix.needsUpdate = true;
+
+      // Анимация Слоя A: 700 объёмных 3D-снежинок всегда вокруг текущей высоты камеры camY
+      const active3DSnowCount = Math.min(
+        SNOW_3D_COUNT,
+        Math.floor(270 * density)
+      );
+      snowCrystalInstanced.count = active3DSnowCount;
+      for (let i = 0; i < active3DSnowCount; i++) {
+        const sd = snow3DData[i];
+        sd.yOffset -=
+          0.028 * sd.speedY * preset.fallSpeed * (0.4 + density * 0.45);
+        if (sd.yOffset < -17.0) sd.yOffset = 17.0;
+        sd.angle += 0.004 * preset.windSpeed;
+
+        const sway = Math.sin(elapsed * 1.8 + sd.phase) * 0.65;
+        const sx = Math.cos(sd.angle) * (sd.radius + sway);
+        const sz = Math.sin(sd.angle) * (sd.radius + sway);
+        const sy = camY + sd.yOffset;
+
+        snowDummy.position.set(sx, sy, sz);
+        snowDummy.rotation.set(
+          elapsed * sd.rotSpeed,
+          elapsed * sd.rotSpeed * 0.8,
+          sd.phase
+        );
+        const sparkleBoost =
+          1.0 +
+          preset.diamondSparkle *
+            0.35 *
+            Math.sin(elapsed * 6.0 + sd.phase);
+        snowDummy.scale.setScalar(sd.scale * sparkleBoost);
+        snowDummy.updateMatrix();
+        snowCrystalInstanced.setMatrixAt(i, snowDummy.matrix);
+      }
+      snowCrystalInstanced.instanceMatrix.needsUpdate = true;
+
+      // Анимация Слоя B: 1300 пушистых снежинок с текстурой боке (масштабируются ползунком интенсивности)
+      snowPointsSystem.visible = density > 0.02;
+      snowPointsMat.opacity = Math.min(1.0, 0.3 + density * 0.34);
+      snowPointsMat.size = 0.9 + density * 0.28;
+
+      const posAttr = snowBufferGeo.getAttribute("position");
+      const posArr = posAttr.array;
+      for (let i = 0; i < SNOW_PARTICLES_COUNT; i++) {
+        const v = snowVel[i];
+        let py =
+          posArr[i * 3 + 1] -
+          0.045 * v.vy * preset.fallSpeed * (0.35 + density * 0.5);
+        if (py < camY - 26.0) {
+          py = camY + 26.0;
+        } else if (py > camY + 28.0) {
+          py = camY - 24.0;
+        }
+        posArr[i * 3 + 1] = py;
+        posArr[i * 3] +=
+          Math.sin(elapsed * 1.4 + v.phase) * 0.03 * preset.windSpeed;
+        posArr[i * 3 + 2] +=
+          Math.cos(elapsed * 1.2 + v.phase) * 0.03 * preset.windSpeed;
+      }
+      posAttr.needsUpdate = true;
+
+      const flameM = candleFlameMeshRef.current;
+      const haloM = candleHaloMeshRef.current;
+      const metas = activeCandlesMetaRef.current;
+      if (flameM && haloM && metas.length > 0) {
+        for (let i = 0; i < metas.length; i++) {
+          const m = metas[i];
+          if (!m.hasCandle) {
+            flameDummy.position.set(0, -999, 0);
+            flameDummy.scale.setScalar(0.0001);
+            flameDummy.updateMatrix();
+            flameM.setMatrixAt(i, flameDummy.matrix);
+            haloM.setMatrixAt(i, flameDummy.matrix);
+            continue;
+          }
+          const flicker = 1.0 + 0.18 * Math.sin(elapsed * 9.0 + m.phase);
+          flameDummy.position.set(m.worldX, m.worldY, m.worldZ);
+          flameDummy.scale.set(
+            m.baseScale * 0.9,
+            m.baseScale * 1.35 * flicker,
+            m.baseScale * 0.9
+          );
+          flameDummy.updateMatrix();
+          flameM.setMatrixAt(i, flameDummy.matrix);
+          haloM.setMatrixAt(i, flameDummy.matrix);
+        }
+        flameM.instanceMatrix.needsUpdate = true;
+        haloM.instanceMatrix.needsUpdate = true;
+      }
+
+      for (let i = activeOwlFlights.length - 1; i >= 0; i--) {
+        const flight = activeOwlFlights[i];
+        const progress = (elapsed - flight.startTime) / flight.duration;
+        if (progress >= 1.25) {
+          owlFlightsGroup.remove(flight.lineMesh);
+          owlFlightsGroup.remove(flight.owlHeadMesh);
+          flight.lineMesh.geometry.dispose();
+          flight.lineMat.dispose();
+          activeOwlFlights.splice(i, 1);
+          continue;
+        }
+        const clampedT = Math.min(progress, 1.0);
+        const currentPos = flight.curve.getPointAt(clampedT);
+        flight.owlHeadMesh.position.copy(currentPos);
+        const drawCount = Math.max(2, Math.floor(clampedT * flight.totalPoints));
+        flight.lineMesh.geometry.setDrawRange(0, drawCount);
+      }
+
+      const activeSeq = Math.max(
+        0,
+        Math.floor(scrollDepth / VERTICAL_STEP_PER_GIFT)
+      );
+      setCurrentTier(Math.floor(activeSeq / GIFTS_PER_TIER));
+
+      composer.render();
+    };
+    animate();
+
+    const handleResize = () => {
+      if (!container) return;
+      camera.aspect = container.clientWidth / container.clientHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(container.clientWidth, container.clientHeight);
+      composer.setSize(container.clientWidth, container.clientHeight);
+    };
+    window.addEventListener("resize", handleResize);
+
+    return () => {
+      cancelAnimationFrame(animFrameId);
+      window.removeEventListener("resize", handleResize);
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+      window.removeEventListener("touchend", onTouchEnd);
+      domElem.removeEventListener("wheel", onWheel);
+      domElem.removeEventListener("mousedown", onMouseDown);
+      domElem.removeEventListener("touchstart", onTouchStart);
+      domElem.removeEventListener("touchmove", onTouchMove);
+      domElem.removeEventListener("click", onClick);
+      musicBoxSynth.stop();
+      composer.dispose();
+      renderer.dispose();
+      if (container.contains(renderer.domElement)) {
+        container.removeChild(renderer.domElement);
+      }
+    };
+  }, [syncInstancedMeshes]);
+
+  const resortTreeByLightHierarchy = useCallback((focusGiftId) => {
+    const allGifts = Array.from(giftsMapRef.current.values());
+    allGifts.forEach((g) => {
+      if (!g.offline) return;
+      const details = computeAntiSybilScoreDetails({
+        wishText: g.secret_wish || "",
+        wishCharCount: g.wish_char_count || 180,
+        celestaTrack: g.melody?.celesta_track || [],
+        harpTrack: g.melody?.harp_track || [],
+        celloTrack: g.melody?.cello_track || [],
+        fluteTrack: g.melody?.flute_track || [],
+        drumTrack: g.melody?.drum_track || [],
+        voxelsCount: g.snowglobe?.voxels?.length || 24,
+        engravingText: g.snowglobe?.engraving_text || "",
+        candlesCount: g.candles_count || 0,
+      });
+      g.quality_score = details.total;
+    });
+
+    allGifts.sort(
+      (a, b) =>
+        b.quality_score - a.quality_score ||
+        (a.created_order || 0) - (b.created_order || 0)
+    );
+
+    const newMap = new Map();
+    let focusedGiftUpdated = null;
+    allGifts.forEach((g, newSeq) => {
+      g.coordinates = computeFibonacciSpiralSlot(newSeq);
+      newMap.set(newSeq, g);
+      if (g.id === focusGiftId) focusedGiftUpdated = { ...g };
+    });
+    giftsMapRef.current = newMap;
+    return focusedGiftUpdated;
+  }, []);
+
+  const handleLightCandle = () => {
+    if (!selectedGift || litGiftIds.has(selectedGift.id)) return;
+    const seq = selectedGift.coordinates.sequence_number;
+    const nodeInMap = giftsMapRef.current.get(seq);
+    const updatedCount = selectedGift.candles_count + 1;
+    if (nodeInMap) nodeInMap.candles_count = updatedCount;
+
+    const litId = selectedGift.id;
+    if (!selectedGift.offline && nodeInMap) {
+      apiLightGiftCandle(litId)
+        .then((dto) => {
+          nodeInMap.quality_score = dto.quality_score;
+          nodeInMap.candles_count = dto.candles_count;
+          const serverAscended = resortTreeByLightHierarchy(nodeInMap.id);
+          syncInstancedMeshes();
+          if (serverAscended) {
+            setSelectedGift(serverAscended);
+            scrollTargetRef.current = Math.min(
+              MAX_SCROLL_DEPTH,
+              serverAscended.coordinates.y_height
+            );
+          }
+        })
+        .catch((err) => {
+          // Сервер свечу не засчитал — откатываем оптимистичный +1.
+          nodeInMap.candles_count = Math.max(1, nodeInMap.candles_count - 1);
+          syncInstancedMeshes();
+          if (isNetworkError(err) || err.status === 429) {
+            // Можно попробовать ещё раз позже.
+            setLitGiftIds((prev) => {
+              const next = new Set(prev);
+              next.delete(litId);
+              saveLitGiftIds(next);
+              return next;
+            });
+          }
+        });
+    }
+
+    const ascendedGift = resortTreeByLightHierarchy(selectedGift.id);
+    syncInstancedMeshes();
+    if (ascendedGift) {
+      setSelectedGift(ascendedGift);
+      scrollTargetRef.current = Math.min(
+        MAX_SCROLL_DEPTH,
+        ascendedGift.coordinates.y_height
+      );
+    }
+
+    setLitGiftIds((prev) => {
+      const next = new Set(prev).add(litId);
+      saveLitGiftIds(next);
+      return next;
+    });
+    musicBoxSynth.playSingleNote("celesta", 13);
+  };
+
+  const handleReportGift = async () => {
+    if (!selectedGift || selectedGift.offline || reportedGiftIds.has(selectedGift.id)) return;
+    const giftId = selectedGift.id;
+    setReportedGiftIds((prev) => new Set(prev).add(giftId));
+    try {
+      const res = await apiReportGift(giftId, "other");
+      if (res?.quarantined) {
+        // Шар скрыт модерацией — перезагрузим витрину при следующем открытии.
+        console.info("[WorldFir] Шар скрыт по жалобам:", giftId);
+      }
+    } catch {
+      setReportedGiftIds((prev) => {
+        const next = new Set(prev);
+        next.delete(giftId);
+        return next;
+      });
+    }
+  };
+
+  const handleGiftCreated = async (formData) => {
+    const orderIdx = giftsMapRef.current.size;
+    const wishText = formData.card.secret_wish || "";
+    let newGiftNode = null;
+
+    if (!isOfflineMode) {
+      try {
+        const dto = await apiCreateGift(formData);
+        newGiftNode = giftNodeFromDTO(dto);
+        if (dto.my_user_id) setMyUserId(dto.my_user_id);
+      } catch (err) {
+        // Сервер ОТКЛОНИЛ шар (модерация, лимит и т.п.) — не делаем вид, что он повешен:
+        // ошибка уходит в Мастерскую, где человек может её исправить.
+        if (!isNetworkError(err)) throw err;
+        console.warn("[WorldFir] API недоступен — шар сохранён локально:", err);
+      }
+    }
+
+    if (!newGiftNode) {
+      const initialScoreObj = computeAntiSybilScoreDetails({
+        wishText,
+        celestaTrack: formData.melody.celesta_track,
+        harpTrack: formData.melody.harp_track,
+        celloTrack: formData.melody.cello_track,
+        fluteTrack: formData.melody.flute_track,
+        drumTrack: formData.melody.drum_track,
+        voxelsCount: formData.snowglobe.voxels?.length || 24,
+        engravingText: formData.snowglobe.engraving_text,
+        candlesCount: 1,
+      });
+
+      newGiftNode = {
+        id: `my-gift-${orderIdx}`,
+        author_id: "my-local-user",
+        created_order: orderIdx,
+        offline: true,
+        quality_score: initialScoreObj.total,
+        coordinates: computeFibonacciSpiralSlot(orderIdx),
+        snowglobe: formData.snowglobe,
+        packaging: formData.packaging,
+        melody: formData.melody,
+        card_preview: {
+          teaser_tag: formData.card.teaser_tag,
+          author_display_name: formData.card.author_display_name,
+          city: formData.card.city,
+          totem_pet: formData.card.totem_pet,
+        },
+        secret_wish: wishText,
+        wish_char_count: wishText.trim().length,
+        candles_count: 1,
+      };
+      newGiftNode.genome_hash = computeDeterministicGenomeHash(newGiftNode);
+    }
+
+    giftsMapRef.current.set(orderIdx, newGiftNode);
+    const placedGift = resortTreeByLightHierarchy(newGiftNode.id) || newGiftNode;
+    syncInstancedMeshes();
+
+    setMyHungGift(placedGift);
+    setSelectedGift(placedGift);
+    scrollTargetRef.current = Math.min(
+      MAX_SCROLL_DEPTH,
+      placedGift.coordinates.y_height
+    );
+    musicBoxSynth.playMelody(
+      placedGift.melody.tempo_bpm,
+      placedGift.melody.celesta_track,
+      placedGift.melody.harp_track,
+      placedGift.melody.cello_track,
+      placedGift.melody.flute_track,
+      placedGift.melody.drum_track,
+      null,
+      placedGift.id
+    );
+  };
+
+  const handleStepNeighborGift = (delta) => {
+    if (!selectedGift) return;
+    const total = giftsMapRef.current.size;
+    if (total === 0) return;
+    const nextSeq =
+      (selectedGift.coordinates.sequence_number + delta + total) % total;
+    const nextGift = giftsMapRef.current.get(nextSeq);
+    if (nextGift) {
+      setSelectedGift({ ...nextGift });
+      scrollTargetRef.current = Math.min(
+        MAX_SCROLL_DEPTH,
+        nextGift.coordinates.y_height
+      );
+      musicBoxSynth.playMelody(
+        nextGift.melody.tempo_bpm,
+        nextGift.melody.celesta_track,
+        nextGift.melody.harp_track,
+        nextGift.melody.cello_track,
+        nextGift.melody.flute_track,
+        nextGift.melody.drum_track,
+        null,
+        nextGift.id
+      );
+    }
+  };
+
+  const selectedSealMeta = selectedGift
+    ? WAX_SEAL_MAP[selectedGift.packaging.wax_seal_stamp] || WAX_SEALS[0]
+    : null;
+
+  const isSelectedGiftPlaying =
+    selectedGift && audioPlaybackState.playingId === selectedGift.id;
+
+  const selectedGiftGenomeShort = useMemo(() => {
+    if (!selectedGift) return "";
+    return computeDeterministicGenomeHash(selectedGift).slice(0, 14) + "…";
+  }, [selectedGift]);
+
+  return (
+    <div className="relative w-full h-screen bg-[#040914] overflow-hidden select-none font-sans text-slate-100">
+      <div
+        ref={mountRef}
+        className="w-full h-full cursor-grab active:cursor-grabbing touch-none"
+      />
+
+      {/* Передний 2D-параллакс слой резных снежинок (100% видимость при любом ракурсе) */}
+      <canvas
+        ref={fgSnowCanvasRef}
+        className="fixed inset-0 pointer-events-none z-10"
+      />
+
+      {/* Морозная рождественская изморозь по краям экрана */}
+      <div
+        className="fixed inset-0 pointer-events-none z-10 transition-opacity duration-700"
+        style={{
+          opacity: activeWeatherPreset.frostVignette,
+          background:
+            "radial-gradient(circle at 50% 50%, transparent 58%, rgba(186, 230, 253, 0.22) 88%, rgba(224, 242, 254, 0.45) 100%)",
+        }}
+      />
+
+      {/* ЕДИНАЯ ВЕРХНЯЯ ПАНЕЛЬ БЕЗ НАЛОЖЕНИЙ (Mobile-First + Desktop) */}
+      <div className="fixed top-2.5 left-2.5 right-2.5 z-30 flex flex-col gap-2 pointer-events-none">
+        {/* Главная компактная строка управления */}
+        <div className="flex items-center justify-between gap-2">
+          {/* Левый блок: название + быстрые бейджи + кнопка открытия погоды */}
+          <div className="bg-[#0a1326]/85 backdrop-blur-xl border border-amber-400/40 rounded-2xl px-3 py-2 shadow-2xl pointer-events-auto flex items-center gap-2.5 min-w-0">
+            <div className="min-w-0">
+              <div className="flex items-center gap-1.5">
+                <span className="text-sm sm:text-base">🎄</span>
+                <h1 className="font-serif text-sm sm:text-xl font-bold text-amber-50 truncate">
+                  Всемирная ёлка подарков
+                </h1>
+              </div>
+              <div className="flex items-center gap-1 mt-0.5 text-[10px]">
+                <span className="px-1.5 py-0.5 rounded bg-emerald-950/90 border border-emerald-400/40 text-emerald-300 font-semibold whitespace-nowrap">
+                  🛡️ 18+
+                </span>
+                {isOfflineMode && (
+                  <span className="px-1.5 py-0.5 rounded bg-amber-950/90 border border-amber-400/40 text-amber-300 font-semibold whitespace-nowrap">
+                    ⚠️ Демо-режим
+                  </span>
+                )}
+                <span className="px-1.5 py-0.5 rounded bg-slate-900 border border-slate-700 text-amber-300 font-mono whitespace-nowrap">
+                  🌲 Ярус {currentTier}
+                </span>
+                <span className="hidden sm:inline-block px-1.5 py-0.5 rounded bg-slate-900 border border-slate-700 text-sky-300 font-mono whitespace-nowrap">
+                  🧊 {totalVoxelsOnTree}
+                </span>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setIsWeatherDrawerOpen((prev) => !prev)}
+              className={`px-2.5 py-1.5 rounded-xl border text-[11px] font-bold transition whitespace-nowrap shrink-0 ${
+                isWeatherDrawerOpen
+                  ? "bg-amber-400 text-slate-950 border-amber-200 shadow-md"
+                  : "bg-slate-900/90 text-sky-200 border-sky-400/35 hover:border-amber-400/50"
+              }`}
+            >
+              🌨 Погода {activeWeatherPreset.temp} {isWeatherDrawerOpen ? "▲" : "▼"}
+            </button>
+          </div>
+
+          {/* Правый блок: таймер Кольца Чудес + кнопка Создать шар (никогда не перекрывают левый блок) */}
+          <div className="flex items-center gap-1.5 pointer-events-auto shrink-0">
+            <button
+              type="button"
+              onClick={() => setIsRingModalOpen(true)}
+              className="bg-[#0b1528]/85 backdrop-blur-xl border border-amber-400/40 rounded-2xl px-2.5 sm:px-3.5 py-1.5 sm:py-2 text-right shadow-2xl whitespace-nowrap"
+            >
+              <div className="text-[9px] sm:text-[10px] uppercase tracking-wider text-amber-400 font-semibold">
+                🦉 Кольцо & NFT
+              </div>
+              <div className="text-[11px] sm:text-xs font-mono font-bold text-amber-50">
+                ⏳ {countdownText}
+              </div>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setIsWorkshopOpen(true)}
+              className="px-3 sm:px-4 py-2 sm:py-2.5 rounded-2xl bg-gradient-to-r from-amber-400 to-yellow-500 text-slate-950 font-bold text-xs sm:text-sm shadow-xl whitespace-nowrap"
+            >
+              🤲 <span className="hidden xs:inline">Создать</span> шар
+            </button>
+          </div>
+        </div>
+
+        {/* Быстрые кнопки навигации по высоте Ели и звука камина (в одну аккуратную строчку) */}
+        <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 pointer-events-auto no-scrollbar">
+          <button
+            type="button"
+            onClick={() => {
+              scrollTargetRef.current = 2.0;
+            }}
+            className="px-2.5 py-1 rounded-xl bg-[#091224]/85 backdrop-blur-md border border-amber-400/30 text-amber-200 text-[11px] whitespace-nowrap shrink-0"
+          >
+            ✨ К вершине
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              scrollTargetRef.current = 56.0;
+            }}
+            className="px-2.5 py-1 rounded-xl bg-[#091224]/85 backdrop-blur-md border border-amber-400/30 text-emerald-300 text-[11px] whitespace-nowrap shrink-0"
+          >
+            🏮 Поляна и фонари
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              const next = !isHearthSoundOn;
+              setIsHearthSoundOn(next);
+              musicBoxSynth.toggleCozyHearthAmbient(next);
+            }}
+            className={`px-2.5 py-1 rounded-xl border text-[11px] font-semibold whitespace-nowrap shrink-0 ${
+              isHearthSoundOn
+                ? "bg-amber-500/30 border-amber-400 text-amber-200"
+                : "bg-[#091224]/85 border-slate-700 text-slate-300"
+            }`}
+          >
+            🔥 Камин {isHearthSoundOn ? "ВКЛ" : ""}
+          </button>
+          <button
+            type="button"
+            onClick={() =>
+              spawnOwlRef.current?.({
+                handshake_id: `test-${Date.now()}`,
+                from_city: "Мирный",
+                to_city: "Санкт-Петербург",
+              })
+            }
+            className="px-2.5 py-1 rounded-xl bg-amber-500/20 border border-amber-400/45 text-amber-300 text-[11px] font-semibold whitespace-nowrap shrink-0"
+          >
+            🦉 Полёт совы
+          </button>
+        </div>
+
+        {/* Выпадающая панель выбора погоды и интенсивности снегопада (открывается по кнопке «🌨 Погода») */}
+        {isWeatherDrawerOpen && (
+          <div className="bg-[#0a1326]/95 backdrop-blur-xl border border-amber-400/45 rounded-2xl p-3 shadow-2xl max-w-md pointer-events-auto space-y-2.5">
+            <div className="flex items-center justify-between text-[10px] uppercase tracking-wider text-amber-300 font-semibold">
+              <span>🌨 Атмосфера и рождественский снег</span>
+              <button
+                type="button"
+                onClick={() => setIsWeatherDrawerOpen(false)}
+                className="px-2 py-0.5 rounded bg-slate-800 text-slate-300 text-[10px]"
+              >
+                Скрыть ✕
+              </button>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-1">
+              {CHRISTMAS_ATMOSPHERE_PRESETS.map((pr) => (
+                <button
+                  key={pr.id}
+                  type="button"
+                  onClick={() => setWeatherPresetId(pr.id)}
+                  className={`px-2 py-1.5 rounded-xl text-[10px] font-semibold border transition truncate ${
+                    weatherPresetId === pr.id
+                      ? "bg-amber-400 text-slate-950 border-amber-200 shadow-md"
+                      : "bg-slate-900/90 text-slate-300 border-slate-700 hover:border-amber-400/40"
+                  }`}
+                >
+                  {pr.title}
+                </button>
+              ))}
+            </div>
+
+            <div className="bg-slate-950/85 border border-sky-400/25 rounded-xl p-2 space-y-1.5">
+              <div className="flex items-center justify-between text-[11px]">
+                <span className="text-sky-200 font-semibold">
+                  ❄️ Интенсивность снегопада:
+                </span>
+                <span className="px-2 py-0.5 rounded bg-sky-500/20 text-sky-300 font-mono font-bold text-[10px]">
+                  {Math.round(snowDensityMultiplier * 100)}%
+                </span>
+              </div>
+              <input
+                type="range"
+                min={0}
+                max={3.0}
+                step={0.1}
+                value={snowDensityMultiplier}
+                onChange={(e) =>
+                  setSnowDensityMultiplier(Number(e.target.value))
+                }
+                className="w-full accent-sky-400 cursor-pointer h-1.5 rounded-lg"
+              />
+              <div className="flex items-center justify-between gap-1 pt-0.5">
+                {[
+                  { label: "Штиль 0%", val: 0 },
+                  { label: "Лёгкий 80%", val: 0.8 },
+                  { label: "Густой 150%", val: 1.5 },
+                  { label: "Буран 300%", val: 3.0 },
+                ].map((preset) => (
+                  <button
+                    key={preset.label}
+                    type="button"
+                    onClick={() => setSnowDensityMultiplier(preset.val)}
+                    className={`flex-1 py-0.5 px-1.5 rounded text-[9px] font-semibold border transition whitespace-nowrap ${
+                      Math.abs(snowDensityMultiplier - preset.val) < 0.08
+                        ? "bg-sky-400 text-slate-950 border-sky-200"
+                        : "bg-slate-900 text-slate-400 border-slate-800 hover:text-slate-200"
+                    }`}
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setIsForegroundSnowOn((v) => !v)}
+              className={`w-full py-1.5 px-2.5 rounded-xl border text-[10px] font-semibold whitespace-nowrap ${
+                isForegroundSnowOn
+                  ? "bg-sky-500/25 border-sky-400 text-sky-200"
+                  : "bg-slate-900 border-slate-700 text-slate-400"
+              }`}
+            >
+              ❄️ Резные снежинки у экрана: {isForegroundSnowOn ? "ВКЛ" : "ВЫКЛ"}
+            </button>
+          </div>
+        )}
+      </div>
+
+      {owlBanner && (
+        <div className="fixed top-24 left-1/2 -translate-x-1/2 z-40 pointer-events-none animate-bounce">
+          <div className="flex items-center gap-3.5 px-6 py-3.5 rounded-2xl bg-[#091224]/95 border-2 border-amber-400/70 shadow-2xl">
+            <span className="text-3xl">🦉</span>
+            <div>
+              <div className="text-[10px] uppercase text-amber-300 font-bold">
+                Свершилось Двойное Рукопожатие Мастеров!
+              </div>
+              <div className="font-serif text-lg font-bold text-white">
+                {owlBanner.from_city} ⇄ {owlBanner.to_city}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {selectedGift && (
+        <div className="fixed bottom-2.5 right-2.5 left-2.5 md:left-auto md:w-[450px] max-h-[75vh] overflow-y-auto bg-[#0b1528]/92 backdrop-blur-xl border border-amber-400/45 rounded-2xl sm:rounded-3xl p-3 sm:p-4 shadow-2xl z-30">
+          <div className="flex justify-between items-center gap-2">
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-400/40 whitespace-nowrap">
+                  ✨ {selectedGift.quality_score}
+                </span>
+                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-sky-500/20 text-sky-300 border border-sky-400/40 whitespace-nowrap">
+                  🕯 {selectedGift.candles_count}
+                </span>
+                <h3 className="font-serif text-sm sm:text-lg font-bold text-amber-50 truncate">
+                  «{selectedGift.card_preview.teaser_tag}»
+                </h3>
+              </div>
+              <div className="text-[11px] text-slate-300 truncate mt-0.5">
+                Мастер: <strong className="text-white">{selectedGift.card_preview.author_display_name}</strong> ({selectedGift.card_preview.city})
+              </div>
+            </div>
+
+            <div className="flex items-center gap-1 shrink-0">
+              {/* На мобильных кнопка разворачивания/сворачивания 3D-превью шара */}
+              <button
+                type="button"
+                onClick={() => setIsMobileCardExpanded((v) => !v)}
+                className="md:hidden px-2 py-1 rounded-lg bg-slate-800 text-amber-300 border border-amber-400/30 text-[10px] font-semibold whitespace-nowrap"
+              >
+                {isMobileCardExpanded ? "Свернуть ▲" : "3D-Шар ▼"}
+              </button>
+              <button
+                type="button"
+                title="Предыдущий шар на спирали"
+                onClick={() => handleStepNeighborGift(-1)}
+                className="text-slate-300 hover:text-amber-300 text-xs w-7 h-7 sm:w-8 sm:h-8 rounded-xl bg-slate-800/90 flex items-center justify-center"
+              >
+                ◀
+              </button>
+              <button
+                type="button"
+                title="Следующий шар на спирали"
+                onClick={() => handleStepNeighborGift(1)}
+                className="text-slate-300 hover:text-amber-300 text-xs w-7 h-7 sm:w-8 sm:h-8 rounded-xl bg-slate-800/90 flex items-center justify-center"
+              >
+                ▶
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  musicBoxSynth.stop();
+                  setSelectedGift(null);
+                }}
+                className="text-slate-400 hover:text-white text-xs w-7 h-7 sm:w-8 sm:h-8 rounded-xl bg-slate-800 flex items-center justify-center"
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+
+          {/* Детальная витрина шара: всегда видна на ПК, а на телефоне открывается по кнопке «3D-Шар ▼», чтобы не закрывать Ель */}
+          <div
+            className={`${
+              isMobileCardExpanded ? "flex" : "hidden md:flex"
+            } mt-2.5 p-3 rounded-2xl bg-[#050a14]/90 border border-amber-500/25 flex-col sm:flex-row items-center gap-3.5`}
+          >
+            <VoxelSnowglobe3DViewer
+              voxels={selectedGift.snowglobe?.voxels}
+              baseMaterial={selectedGift.snowglobe?.base_material || "mahogany"}
+              glitterColor={selectedGift.snowglobe?.glitter_color || "#fde047"}
+              engravingText={selectedGift.snowglobe?.engraving_text}
+              size="sm"
+            />
+            <div className="flex-1 text-xs space-y-1.5 w-full">
+              <p className="text-slate-300">
+                Тотем:{" "}
+                <span className="text-amber-300">
+                  {selectedSealMeta?.symbol}{" "}
+                  {selectedGift.card_preview.totem_pet}
+                </span>
+              </p>
+              <div className="text-[10px] font-mono text-sky-300 truncate">
+                Геном: {selectedGiftGenomeShort}
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setIsInspectModalOpen(true)}
+                className="w-full py-1.5 px-3 rounded-xl bg-slate-800/90 hover:bg-slate-700 border border-amber-400/35 text-amber-200 font-semibold text-xs transition"
+              >
+                🔍 Осмотреть ручную работу крупным планом
+              </button>
+
+              <button
+                type="button"
+                onClick={() =>
+                  setNftModalState({
+                    isOpen: true,
+                    gift: selectedGift,
+                    recipientCity: null,
+                  })
+                }
+                className="w-full py-1.5 px-3 rounded-xl bg-gradient-to-r from-sky-500/25 to-indigo-500/25 hover:from-sky-500/35 hover:to-indigo-500/35 border border-sky-400/50 text-sky-200 font-semibold text-xs transition"
+              >
+                💎 NFT-Паспорт & Скачать 3D-Капсулу
+              </button>
+            </div>
+          </div>
+
+          {/* 16-шаговый индикатор проигрывания симфонии */}
+          <div className="mt-2.5 bg-[#050a14]/90 border border-slate-800 rounded-xl p-2 space-y-1">
+            <div className="flex items-center justify-between text-[10px] text-slate-400">
+              <span className="truncate">
+                {isSelectedGiftPlaying
+                  ? `🎶 Играет шаг ${(audioPlaybackState.step ?? 0) + 1} из 16`
+                  : "Тап по шару на Ёлке включает/выключает музыку"}
+              </span>
+              <button
+                type="button"
+                onClick={() =>
+                  musicBoxSynth.setLooping(!audioPlaybackState.isLooping)
+                }
+                className={`px-2 py-0.5 rounded font-semibold transition whitespace-nowrap ${
+                  audioPlaybackState.isLooping
+                    ? "bg-amber-400/25 text-amber-300 border border-amber-400/40"
+                    : "bg-slate-900 text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                🔁 Цикл {audioPlaybackState.isLooping ? "ВКЛ" : "ВЫКЛ"}
+              </button>
+            </div>
+            <div className="grid grid-cols-[repeat(16,minmax(0,1fr))] gap-1">
+              {Array.from({ length: 16 }).map((_, sIdx) => {
+                const isActive =
+                  isSelectedGiftPlaying && audioPlaybackState.step === sIdx;
+                return (
+                  <div
+                    key={sIdx}
+                    className={`h-1.5 rounded-full transition ${
+                      isActive
+                        ? "bg-amber-400 scale-y-125 shadow-[0_0_8px_#fbbf24]"
+                        : sIdx % 4 === 0
+                        ? "bg-slate-700"
+                        : "bg-slate-800"
+                    }`}
+                  />
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="mt-2.5 flex gap-2">
+            <button
+              type="button"
+              onClick={() =>
+                musicBoxSynth.toggleMelody(
+                  selectedGift.id,
+                  selectedGift.melody.tempo_bpm,
+                  selectedGift.melody.celesta_track,
+                  selectedGift.melody.harp_track,
+                  selectedGift.melody.cello_track,
+                  selectedGift.melody.flute_track,
+                  selectedGift.melody.drum_track
+                )
+              }
+              className={`flex-1 py-2 px-3 rounded-xl border text-xs font-bold whitespace-nowrap transition ${
+                isSelectedGiftPlaying
+                  ? "bg-rose-500 hover:bg-rose-400 border-rose-300 text-white"
+                  : "bg-slate-800 hover:bg-slate-700 text-amber-300 border-amber-400/30"
+              }`}
+            >
+              {isSelectedGiftPlaying
+                ? "⏹ Стоп"
+                : "▶ Слушать (5 дорожек)"}
+            </button>
+            <button
+              type="button"
+              disabled={litGiftIds.has(selectedGift.id)}
+              onClick={handleLightCandle}
+              className="flex-1 py-2 px-3 rounded-xl bg-gradient-to-r from-amber-400 to-orange-500 text-slate-950 font-bold text-xs whitespace-nowrap"
+            >
+              {litGiftIds.has(selectedGift.id)
+                ? "🕯 Свеча горит"
+                : "🕯 Зажечь свечу"}
+            </button>
+            {!selectedGift.offline && (
+              <button
+                type="button"
+                title="Пожаловаться на неуместное содержимое"
+                aria-label="Пожаловаться на шар"
+                disabled={reportedGiftIds.has(selectedGift.id)}
+                onClick={handleReportGift}
+                className="py-2 px-2.5 rounded-xl border border-slate-700 bg-slate-900 text-slate-400 hover:text-rose-300 disabled:opacity-50 text-xs"
+              >
+                {reportedGiftIds.has(selectedGift.id) ? "✓" : "⚑"}
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {isInspectModalOpen && selectedGift && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#030712]/90 backdrop-blur-xl p-4">
+          <div className="bg-[#091224] border border-amber-400/50 rounded-3xl p-6 max-w-md w-full flex flex-col items-center space-y-4 shadow-2xl">
+            <div className="w-full flex items-center justify-between">
+              <span className="text-xs uppercase tracking-widest text-amber-400 font-semibold">
+                🤲 Витрина Ручного Творчества
+              </span>
+              <button
+                type="button"
+                onClick={() => setIsInspectModalOpen(false)}
+                className="w-8 h-8 rounded-lg bg-slate-800 text-slate-200"
+              >
+                ✕
+              </button>
+            </div>
+            <h3 className="font-serif text-2xl font-bold text-white text-center">
+              «{selectedGift.card_preview.teaser_tag}»
+            </h3>
+            <VoxelSnowglobe3DViewer
+              voxels={selectedGift.snowglobe?.voxels}
+              baseMaterial={selectedGift.snowglobe?.base_material}
+              glitterColor={selectedGift.snowglobe?.glitter_color}
+              engravingText={selectedGift.snowglobe?.engraving_text}
+              size="lg"
+            />
+            <button
+              type="button"
+              onClick={() => {
+                setIsInspectModalOpen(false);
+                setNftModalState({
+                  isOpen: true,
+                  gift: selectedGift,
+                  recipientCity: null,
+                });
+              }}
+              className="w-full py-2.5 px-4 rounded-xl bg-amber-400 text-slate-950 font-bold text-xs"
+            >
+              💎 Открыть NFT-Паспорт и скачать 3D-Капсулу
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Модальное окно Мастерской 3D-Шара и 5-дорожечной Симфонии */}
+      <GiftWorkshopModal
+        isOpen={isWorkshopOpen}
+        onClose={() => setIsWorkshopOpen(false)}
+        onGiftCreated={handleGiftCreated}
+      />
+
+      {/* Модальное окно Кольца Чудес и Новогодней Распаковки */}
+      <MiracleRingModal
+        isOpen={isRingModalOpen}
+        onClose={() => setIsRingModalOpen(false)}
+        myUserId={myUserId}
+        myGift={myHungGift || selectedGift}
+        isOfflineMode={isOfflineMode}
+        countdownText={countdownText}
+        isUnlocked={(serverUnlockAtMs ?? UNLOCK_TARGET_MS) <= Date.now() + clockOffsetMs}
+        unlockAtMs={serverUnlockAtMs ?? UNLOCK_TARGET_MS}
+        onTriggerOwlFlight={(payload) => spawnOwlRef.current?.(payload)}
+        onOpenNftPassport={(giftNode, recipientCity) => {
+          setIsRingModalOpen(false);
+          setNftModalState({
+            isOpen: true,
+            gift: giftNode,
+            recipientCity,
+          });
+        }}
+      />
+
+      {/* Модальное окно Криптографического NFT-Паспорта и 3D-Капсулы */}
+      <NftRelicPassportModal
+        isOpen={nftModalState.isOpen}
+        onClose={() =>
+          setNftModalState({ isOpen: false, gift: null, recipientCity: null })
+        }
+        gift={nftModalState.gift}
+        recipientCity={nftModalState.recipientCity}
+      />
+    </div>
+  );
+}

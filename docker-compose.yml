@@ -1,0 +1,25 @@
+services:
+  world-fir-gifts:
+    build: .
+    container_name: world-fir-gifts
+    ports:
+      - "8080:8080"
+    volumes:
+      - world_fir_data:/data
+    environment:
+      SEED_ON_START: "1"
+      SEED_GIFT_COUNT: "60"
+      # Для прода — см. DEPLOY.md. Локально можно оставить так.
+      # APP_ENV: "production"
+      # ADMIN_TOKEN: "change-me"
+      # RING_MATCH_AT: "off"          # формировать Кольцо только вручную
+      # MAX_GIFTS_PER_USER: "3"
+      # REPORT_QUARANTINE_THRESHOLD: "5"
+      # Секрет шифрования контактов (иначе ключ генерируется в /data/.contact_secret):
+      # CONTACT_ENCRYPTION_SECRET: "change-me-in-production"
+      # Дата Новогодней полночи (по умолчанию 2026-12-31T23:59:59Z):
+      # NEW_YEAR_UNLOCK_AT: "2026-12-31T23:59:59+00:00"
+    restart: unless-stopped
+
+volumes:
+  world_fir_data:
