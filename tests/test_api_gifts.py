@@ -221,6 +221,7 @@ async def test_users_me_profile(client):
     assert profile["user_id"] == created["my_user_id"]
     assert profile["gift_ids"] == [created["id"]]
     assert profile["display_name"] == "Тестовый Мастер"
+    assert profile["max_gifts"] == 3, "фронтенд показывает лимит шаров из профиля"
 
 
 async def test_admin_quarantine_hides_gift(client):

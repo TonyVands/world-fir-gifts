@@ -9,33 +9,51 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import select
+from sqlalchemy import text
 
 from app.core import config
 from app.core.security import crypto_service
 from app.database import AsyncSessionLocal, Base, engine
 from app.migrations import run_migrations
-from app.models import User
 from app.routers import gifts, handshakes, ring, users, ws
 from app.services.ring import ring_auto_match_loop
 from app.services.seeder import seed_initial_gifts
 
 logger = logging.getLogger("uvicorn.error")
 
-API_VERSION = "16.0.0"
+API_VERSION = "16.1.0"
 
 
-async def _check_encryption_key() -> None:
-    """Если ключ шифрования сменился/потерялся, контакты молча превратятся в
-    «@keeper_protected» — громко предупреждаем об этом при старте."""
+async def _rotate_and_check_contacts() -> None:
+    """Перешифровывает контакты, зашифрованные прежним ключом, текущим ключом.
+
+    Так смена CONTACT_ENCRYPTION_SECRET/SALT не ломает уже собранные контакты.
+    Если какие-то записи не читаются НИ одним известным ключом — громко пишем в лог.
+    """
+    rotated = unreadable = 0
     async with AsyncSessionLocal() as session:
-        sample = (
-            await session.execute(select(User.encrypted_contact).where(User.is_demo.is_(False)).limit(1))
-        ).scalar_one_or_none()
-    if sample and crypto_service.decrypt_contact(sample) == "@keeper_protected":
+        for table in ("users", "gifts"):
+            rows = (await session.execute(text(f"SELECT id, encrypted_contact FROM {table}"))).all()
+            for row_id, token in rows:
+                if not token or crypto_service.decrypts_with_primary(token):
+                    continue
+                new_token = crypto_service.rotate_token(token)
+                if new_token is None:
+                    unreadable += 1
+                    continue
+                await session.execute(
+                    text(f"UPDATE {table} SET encrypted_contact = :t WHERE id = :id"),
+                    {"t": new_token, "id": row_id},
+                )
+                rotated += 1
+        await session.commit()
+    if rotated:
+        logger.info("[Security] Перешифровано контактов новым ключом: %s", rotated)
+    if unreadable:
         logger.critical(
-            "[Security] Контакты в БД НЕ расшифровываются текущим ключом! "
-            "Проверьте CONTACT_ENCRYPTION_SECRET / CONTACT_ENCRYPTION_SALT."
+            "[Security] %s контактов не расшифровываются ни одним известным ключом! "
+            "Верните прежний CONTACT_ENCRYPTION_SECRET/SALT или файл /data/.contact_secret.",
+            unreadable,
         )
 
 
@@ -55,7 +73,7 @@ async def lifespan(app: FastAPI):
             if seeded:
                 logger.info("[Lifespan] Демо-данные засеяны: %s подарков.", seeded)
 
-    await _check_encryption_key()
+    await _rotate_and_check_contacts()
 
     ring_task = None
     match_at = config.get_ring_match_at()

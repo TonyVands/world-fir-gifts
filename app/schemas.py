@@ -215,6 +215,7 @@ class UserProfileDTO(BaseModel):
     city: str | None = None
     totem_pet: str | None = None
     gift_ids: list[str] = Field(default_factory=list)
+    max_gifts: int = 3
 
 
 class UnlockedGiftDTO(BaseModel):

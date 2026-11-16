@@ -36,7 +36,13 @@ const MAX_SCROLL_DEPTH = 57;
 // Жёсткий барьер высоты камеры (идея из v16.1): никогда не провалиться под землю
 const MIN_CAMERA_Y = -0.3;
 // Масштаб подарочных хрустальных шаров — дары должны читаться крупно на большой ёлке
-const GIFT_ORB_SCALE = 2.2;
+// v16.1: шары уменьшены (было 2.2), чтобы Ель выглядела пропорционально.
+const GIFT_ORB_SCALE = 1.65;
+// Зум камеры (щипок двумя пальцами / Ctrl+колесо). Минимум дополнительно
+// ограничен радиусом кроны, чтобы камера не «ныряла» в ветви.
+const ZOOM_MIN = 0.5;
+const ZOOM_MAX = 1.3;
+const WELCOME_SEEN_KEY = "wfg_welcome_seen_v1";
 const UNLOCK_TARGET_MS = new Date("2026-12-31T23:59:59Z").getTime();
 
 // ============================================================================
@@ -2219,7 +2225,7 @@ function VoxelSnowglobe3DViewer({
 // ============================================================================
 // 4. МОДАЛЬНОЕ ОКНО МАСТЕРСКОЙ 3D-ШАРА, КВИНТОВОГО КРУГА И 5 ДОРОЖЕК (v14.0)
 // ============================================================================
-function GiftWorkshopModal({ isOpen, onClose, onGiftCreated }) {
+function GiftWorkshopModal({ isOpen, onClose, onGiftCreated, remainingGifts = null, maxGifts = 3 }) {
   const [stepTab, setStepTab] = useState(0);
   const [voxels, setVoxels] = useState(() => [...VOXEL_BLUEPRINTS[0].blocks]);
   const [activeLayerY, setActiveLayerY] = useState(2);
@@ -2284,7 +2290,9 @@ function GiftWorkshopModal({ isOpen, onClose, onGiftCreated }) {
     Автор: authorName,
     Город: city,
   });
-  const canSubmit = voxelSafety.isSafe && textSafety.isSafe && contactIsValid && !isSubmitting;
+  const limitReached = remainingGifts === 0;
+  const canSubmit =
+    voxelSafety.isSafe && textSafety.isSafe && contactIsValid && !isSubmitting && !limitReached;
 
   const liveScore = computeAntiSybilScoreDetails({
     wishText: secretWish,
@@ -3026,6 +3034,16 @@ function GiftWorkshopModal({ isOpen, onClose, onGiftCreated }) {
             <span className="text-amber-300 font-bold">
               {liveScore.echelon.label}
             </span>
+            {limitReached && (
+              <span className="block mt-0.5 text-[11px] text-rose-300">
+                На Ёлке уже {maxGifts} ваших шара — это максимум для одного мастера.
+              </span>
+            )}
+            {!limitReached && remainingGifts != null && (
+              <span className="block mt-0.5 text-[11px] text-slate-400">
+                Можно повесить ещё: {remainingGifts} из {maxGifts}
+              </span>
+            )}
             {!contactIsValid && (
               <button
                 type="button"
@@ -3400,6 +3418,113 @@ function NftRelicPassportModal({ isOpen, onClose, gift, recipientCity }) {
 }
 
 // ============================================================================
+// 5.9. ПРИВЕТСТВИЕ И КРАТКИЙ ГАЙД (показывается при первом визите и по «❓»)
+// ============================================================================
+const WELCOME_STEPS = [
+  {
+    icon: "🧊",
+    title: "Слепите фигурку",
+    text: "В хрустальном шаре — конструктор из кубиков 8×8×8. Возьмите готовый домик, ёлочку или снеговика или соберите что-то своё.",
+  },
+  {
+    icon: "🎻",
+    title: "Сочините мелодию",
+    text: "Пять инструментов шкатулки: челеста, арфа, виолончель, флейта и бубенцы. Не уверены в себе — подберите лад и попросите ИИ гармонизировать.",
+  },
+  {
+    icon: "📜",
+    title: "Напишите тайное пожелание",
+    text: "Его прочтёт только тот, кому достанется ваш шар, — в новогоднюю ночь. Оставьте контакт: он откроется, только если вы оба нажмёте «Познакомиться».",
+  },
+  {
+    icon: "🕯",
+    title: "Повесьте шар и зажигайте свечи",
+    text: "Каждая свеча от другого гостя поднимает шар выше по Ёлке. Свою свечу зажечь нельзя — но можно порадовать чужие шары.",
+  },
+  {
+    icon: "🦉",
+    title: "Ждите полуночи",
+    text: "В Новогоднюю полночь сомкнётся Кольцо Чудес: вам достанется шар мастера из другого города, а ваш — кому-то, кто его очень ждёт.",
+  },
+];
+
+function WelcomeGuideModal({ isOpen, onClose, onStart, maxGifts = 3 }) {
+  if (!isOpen) return null;
+  return (
+    <div
+      className="fixed inset-0 z-[55] bg-slate-950/80 backdrop-blur-lg flex items-center justify-center p-3"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="wfg-welcome-title"
+    >
+      <div className="w-full max-w-lg max-h-[92vh] overflow-y-auto bg-[#091224] border border-amber-400/50 rounded-3xl shadow-2xl p-5 sm:p-6 space-y-4">
+        <div className="text-center space-y-2">
+          <div className="text-4xl">🎄</div>
+          <h2 id="wfg-welcome-title" className="font-serif text-2xl sm:text-3xl font-bold text-amber-50">
+            Добро пожаловать к Всемирной ёлке
+          </h2>
+          <p className="text-sm text-slate-300 leading-relaxed">
+            Здесь нет покупных подарков — только то, что сделано руками. Каждый шар на этих ветвях
+            кто-то собрал по кубику, сочинил ему мелодию и вложил внутрь несколько тёплых слов.
+            В новогоднюю ночь все шары разлетятся по Кольцу Чудес, и один из них станет вашим.
+          </p>
+          <p className="text-sm text-amber-200/90 font-semibold">
+            Не бойтесь, что выйдет «не идеально». Чудо делают не пиксели, а внимание.
+          </p>
+        </div>
+
+        <ol className="space-y-2.5">
+          {WELCOME_STEPS.map((step, idx) => (
+            <li
+              key={step.title}
+              className="flex gap-3 items-start p-3 rounded-2xl bg-slate-950/70 border border-slate-800"
+            >
+              <span className="text-2xl leading-none mt-0.5" aria-hidden="true">
+                {step.icon}
+              </span>
+              <div>
+                <div className="text-xs font-bold text-amber-300">
+                  {idx + 1}. {step.title}
+                </div>
+                <div className="text-xs text-slate-300 leading-relaxed mt-0.5">{step.text}</div>
+              </div>
+            </li>
+          ))}
+        </ol>
+
+        <div className="p-3 rounded-2xl bg-sky-950/40 border border-sky-400/25 text-[11px] text-sky-100 leading-relaxed space-y-1">
+          <div>
+            👆 <strong>Как гулять по Ёлке:</strong> свайп — облететь и подняться к вершине, щипок двумя
+            пальцами (или Ctrl + колесо) — приблизить, тап по шару — послушать его мелодию.
+          </div>
+          <div>
+            🤝 <strong>Правила тепла:</strong> до {maxGifts} шаров на мастера, одна свеча от гостя на шар,
+            без грубостей, рекламы и ссылок — фильтр это проверит.
+          </div>
+        </div>
+
+        <div className="flex flex-col sm:flex-row gap-2">
+          <button
+            type="button"
+            onClick={onStart}
+            className="flex-1 py-3 rounded-2xl bg-gradient-to-r from-amber-400 to-yellow-500 text-slate-950 font-bold text-sm shadow-lg"
+          >
+            🤲 Создать свой шар
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex-1 py-3 rounded-2xl bg-slate-800 border border-slate-700 text-slate-200 font-semibold text-sm"
+          >
+            Сначала посмотрю Ёлку
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
 // 6. MAIN 3D WORLD TREE SCENE (CRYSTAL ORBS + TRUE 3D SNOW & CHRISTMAS SANCTUARY)
 // ============================================================================
 export default function App() {
@@ -3466,6 +3591,34 @@ export default function App() {
   // Разница «часы сервера − часы устройства»: у многих телефонов время сбито на минуты.
   const [clockOffsetMs, setClockOffsetMs] = useState(0);
   const [reportedGiftIds, setReportedGiftIds] = useState(() => new Set());
+  // Свои шары (с сервера): у них нельзя зажечь свечу, и по ним считаем лимит.
+  const [myGiftIds, setMyGiftIds] = useState(() => new Set());
+  const [maxGifts, setMaxGifts] = useState(3);
+  const [toast, setToast] = useState(null);
+  const toastTimerRef = useRef(null);
+  const zoomTargetRef = useRef(1);
+  const [isWelcomeOpen, setIsWelcomeOpen] = useState(() => {
+    try {
+      return !localStorage.getItem(WELCOME_SEEN_KEY);
+    } catch {
+      return false;
+    }
+  });
+
+  const showToast = useCallback((text, tone = "info") => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    setToast({ text, tone, id: Date.now() });
+    toastTimerRef.current = setTimeout(() => setToast(null), 4200);
+  }, []);
+
+  const closeWelcome = useCallback(() => {
+    setIsWelcomeOpen(false);
+    try {
+      localStorage.setItem(WELCOME_SEEN_KEY, "1");
+    } catch {
+      /* хранилище недоступно */
+    }
+  }, []);
 
   const activeWeatherPreset = useMemo(
     () =>
@@ -3838,8 +3991,12 @@ export default function App() {
           if (!Number.isNaN(parsed)) setServerUnlockAtMs(parsed);
         }
       }
-      if (profileRes.status === "fulfilled" && profileRes.value?.user_id) {
-        setMyUserId(profileRes.value.user_id);
+      if (profileRes.status === "fulfilled" && profileRes.value) {
+        if (profileRes.value.user_id) setMyUserId(profileRes.value.user_id);
+        if (Array.isArray(profileRes.value.gift_ids)) {
+          setMyGiftIds(new Set(profileRes.value.gift_ids));
+        }
+        if (profileRes.value.max_gifts) setMaxGifts(profileRes.value.max_gifts);
       }
 
       const map = new Map();
@@ -4902,6 +5059,7 @@ export default function App() {
     let prevPointerY = 0;
     let prevPointerX = 0;
     let manualAzimuthOffset = 0;
+    let zoomLevel = zoomTargetRef.current;
     const clock = new THREE.Clock();
 
     spawnOwlRef.current = (payload) => {
@@ -4962,8 +5120,20 @@ export default function App() {
       });
     };
 
+    const clampZoom = (z) => Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, z));
+    let isPinching = false;
+    let pinchStartDist = 0;
+    let pinchStartZoom = 1;
+    const touchDistance = (touches) =>
+      Math.hypot(touches[0].clientX - touches[1].clientX, touches[0].clientY - touches[1].clientY);
+
     const onWheel = (e) => {
       e.preventDefault();
+      // Ctrl+колесо — это и «щипок» на тачпаде ноутбука: приближение/отдаление.
+      if (e.ctrlKey) {
+        zoomTargetRef.current = clampZoom(zoomTargetRef.current * Math.exp(e.deltaY * 0.01));
+        return;
+      }
       scrollTargetRef.current = Math.max(
         0,
         Math.min(MAX_SCROLL_DEPTH, scrollTargetRef.current + e.deltaY * 0.022)
@@ -4995,12 +5165,28 @@ export default function App() {
     // Полноценная поддержка сенсорного экрана (Touch-свайпы пальцем для вращения и полёта вдоль Ели)
     const onTouchStart = (e) => {
       if (!e.touches || e.touches.length === 0) return;
+      if (e.touches.length >= 2) {
+        // Второй палец — переходим в режим щипка, вращение не трогаем.
+        isPinching = true;
+        isDragging = false;
+        dragDistance = 999; // чтобы щипок не засчитался как тап по шару
+        pinchStartDist = touchDistance(e.touches) || 1;
+        pinchStartZoom = zoomTargetRef.current;
+        return;
+      }
       isDragging = true;
       dragDistance = 0;
       prevPointerX = e.touches[0].clientX;
       prevPointerY = e.touches[0].clientY;
     };
     const onTouchMove = (e) => {
+      if (isPinching && e.touches && e.touches.length >= 2) {
+        if (e.cancelable) e.preventDefault();
+        const dist = touchDistance(e.touches) || 1;
+        // Пальцы разводим — приближаемся (дистанция камеры уменьшается).
+        zoomTargetRef.current = clampZoom(pinchStartZoom * (pinchStartDist / dist));
+        return;
+      }
       if (!isDragging || !e.touches || e.touches.length === 0) return;
       if (e.cancelable) e.preventDefault();
       const cx = e.touches[0].clientX;
@@ -5016,7 +5202,10 @@ export default function App() {
       );
       manualAzimuthOffset += dx * 0.008;
     };
-    const onTouchEnd = () => {
+    const onTouchEnd = (e) => {
+      if (isPinching && (!e?.touches || e.touches.length < 2)) {
+        isPinching = false;
+      }
       isDragging = false;
     };
 
@@ -5107,8 +5296,13 @@ export default function App() {
 
       scrollDepth += (scrollTargetRef.current - scrollDepth) * 0.08;
       const spiralAngle = scrollDepth * 0.18 + manualAzimuthOffset;
-      const currentConeRadius =
-        getConeEnvelopeRadius(scrollDepth) * 1.3 + 27.0;
+      zoomLevel += (zoomTargetRef.current - zoomLevel) * 0.12;
+      const baseConeRadius = getConeEnvelopeRadius(scrollDepth) * 1.3 + 27.0;
+      // Нижняя граница: крона чуть ниже камеры + кольцо подвешенных шаров + запас.
+      // Ближе камера не подойдёт ни при каком зуме — без «погружения» в ветви.
+      const minSafeDistance =
+        getConeEnvelopeRadius(scrollDepth + 4.0) * 0.88 + 3.6 + 1.3 * GIFT_ORB_SCALE + 3.5;
+      const currentConeRadius = Math.max(minSafeDistance, baseConeRadius * zoomLevel);
       const camY = 60.0 - scrollDepth;
 
       camera.position.set(
@@ -5331,12 +5525,25 @@ export default function App() {
 
   const handleLightCandle = () => {
     if (!selectedGift || litGiftIds.has(selectedGift.id)) return;
+    if (myGiftIds.has(selectedGift.id)) {
+      showToast("Это ваш шар 🙂 Свечи у него зажигают другие мастера.", "info");
+      return;
+    }
     const seq = selectedGift.coordinates.sequence_number;
     const nodeInMap = giftsMapRef.current.get(seq);
     const updatedCount = selectedGift.candles_count + 1;
     if (nodeInMap) nodeInMap.candles_count = updatedCount;
 
     const litId = selectedGift.id;
+    const markLit = (isLit) =>
+      setLitGiftIds((prev) => {
+        const next = new Set(prev);
+        if (isLit) next.add(litId);
+        else next.delete(litId);
+        saveLitGiftIds(next);
+        return next;
+      });
+
     if (!selectedGift.offline && nodeInMap) {
       apiLightGiftCandle(litId)
         .then((dto) => {
@@ -5351,19 +5558,26 @@ export default function App() {
               serverAscended.coordinates.y_height
             );
           }
+          showToast("🕯 Свеча зажжена — шар поднялся выше на Ёлке!", "success");
         })
         .catch((err) => {
-          // Сервер свечу не засчитал — откатываем оптимистичный +1.
+          // Сервер свечу не засчитал — откатываем оптимистичный +1 и честно говорим почему.
           nodeInMap.candles_count = Math.max(1, nodeInMap.candles_count - 1);
           syncInstancedMeshes();
-          if (isNetworkError(err) || err.status === 429) {
-            // Можно попробовать ещё раз позже.
-            setLitGiftIds((prev) => {
-              const next = new Set(prev);
-              next.delete(litId);
-              saveLitGiftIds(next);
-              return next;
-            });
+          setSelectedGift((prev) =>
+            prev && prev.id === litId ? { ...prev, candles_count: nodeInMap.candles_count } : prev
+          );
+          if (err?.status === 403) {
+            setMyGiftIds((prev) => new Set(prev).add(litId));
+            showToast("Это ваш шар 🙂 Свечи у него зажигают другие мастера.", "info");
+          } else if (err?.status === 409) {
+            showToast("Вы уже зажигали свечу у этого шара — одна свеча от каждого гостя.", "info");
+          } else if (err?.status === 429) {
+            markLit(false);
+            showToast("Слишком много свечей подряд. Передохните минутку ✨", "warn");
+          } else {
+            markLit(false);
+            showToast("Нет связи с Ёлкой — свеча не засчитана. Попробуйте ещё раз.", "warn");
           }
         });
     }
@@ -5378,11 +5592,7 @@ export default function App() {
       );
     }
 
-    setLitGiftIds((prev) => {
-      const next = new Set(prev).add(litId);
-      saveLitGiftIds(next);
-      return next;
-    });
+    markLit(true);
     musicBoxSynth.playSingleNote("celesta", 13);
   };
 
@@ -5393,8 +5603,11 @@ export default function App() {
     try {
       const res = await apiReportGift(giftId, "other");
       if (res?.quarantined) {
-        // Шар скрыт модерацией — перезагрузим витрину при следующем открытии.
-        console.info("[WorldFir] Шар скрыт по жалобам:", giftId);
+        showToast("Спасибо! Шар скрыт до проверки модератором.", "success");
+      } else if (res?.accepted === false) {
+        showToast("Вы уже отправляли жалобу на этот шар.", "info");
+      } else {
+        showToast("Спасибо! Жалоба отправлена модераторам.", "success");
       }
     } catch {
       setReportedGiftIds((prev) => {
@@ -5402,6 +5615,7 @@ export default function App() {
         next.delete(giftId);
         return next;
       });
+      showToast("Не удалось отправить жалобу. Попробуйте позже.", "warn");
     }
   };
 
@@ -5415,11 +5629,23 @@ export default function App() {
         const dto = await apiCreateGift(formData);
         newGiftNode = giftNodeFromDTO(dto);
         if (dto.my_user_id) setMyUserId(dto.my_user_id);
+        const nextCount = myGiftIds.size + 1;
+        setMyGiftIds((prev) => new Set(prev).add(dto.id));
+        showToast(
+          nextCount >= maxGifts
+            ? `🎄 Шар на Ёлке! Это ваш ${nextCount}-й шар из ${maxGifts} — больше повесить нельзя.`
+            : `🎄 Шар на Ёлке! Вы можете повесить ещё ${maxGifts - nextCount}.`,
+          "success"
+        );
       } catch (err) {
         // Сервер ОТКЛОНИЛ шар (модерация, лимит и т.п.) — не делаем вид, что он повешен:
         // ошибка уходит в Мастерскую, где человек может её исправить.
         if (!isNetworkError(err)) throw err;
         console.warn("[WorldFir] API недоступен — шар сохранён локально:", err);
+        showToast(
+          "Нет связи с сервером: шар виден только на этом устройстве и не попадёт в Кольцо. Повесьте его ещё раз, когда связь появится.",
+          "warn"
+        );
       }
     }
 
@@ -5658,6 +5884,13 @@ export default function App() {
             className="px-2.5 py-1 rounded-xl bg-amber-500/20 border border-amber-400/45 text-amber-300 text-[11px] font-semibold whitespace-nowrap shrink-0"
           >
             🦉 Полёт совы
+          </button>
+          <button
+            type="button"
+            onClick={() => setIsWelcomeOpen(true)}
+            className="px-2.5 py-1 rounded-xl bg-[#091224]/85 backdrop-blur-md border border-sky-400/35 text-sky-200 text-[11px] font-semibold whitespace-nowrap shrink-0"
+          >
+            ❓ Как это работает
           </button>
         </div>
 
@@ -5941,11 +6174,13 @@ export default function App() {
             </button>
             <button
               type="button"
-              disabled={litGiftIds.has(selectedGift.id)}
+              disabled={litGiftIds.has(selectedGift.id) || myGiftIds.has(selectedGift.id)}
               onClick={handleLightCandle}
-              className="flex-1 py-2 px-3 rounded-xl bg-gradient-to-r from-amber-400 to-orange-500 text-slate-950 font-bold text-xs whitespace-nowrap"
+              className="flex-1 py-2 px-3 rounded-xl bg-gradient-to-r from-amber-400 to-orange-500 text-slate-950 font-bold text-xs whitespace-nowrap disabled:opacity-60"
             >
-              {litGiftIds.has(selectedGift.id)
+              {myGiftIds.has(selectedGift.id)
+                ? "🤲 Ваш шар"
+                : litGiftIds.has(selectedGift.id)
                 ? "🕯 Свеча горит"
                 : "🕯 Зажечь свечу"}
             </button>
@@ -6013,7 +6248,40 @@ export default function App() {
         isOpen={isWorkshopOpen}
         onClose={() => setIsWorkshopOpen(false)}
         onGiftCreated={handleGiftCreated}
+        remainingGifts={isOfflineMode ? null : Math.max(0, maxGifts - myGiftIds.size)}
+        maxGifts={maxGifts}
       />
+
+      <WelcomeGuideModal
+        isOpen={isWelcomeOpen}
+        onClose={closeWelcome}
+        onStart={() => {
+          closeWelcome();
+          setIsWorkshopOpen(true);
+        }}
+        maxGifts={maxGifts}
+      />
+
+      {toast && (
+        <div
+          key={toast.id}
+          role="status"
+          aria-live="polite"
+          className="fixed left-1/2 -translate-x-1/2 bottom-24 md:bottom-6 z-[60] max-w-[92vw] sm:max-w-md pointer-events-none"
+        >
+          <div
+            className={`px-4 py-2.5 rounded-2xl border shadow-2xl backdrop-blur-xl text-xs sm:text-sm leading-snug ${
+              toast.tone === "success"
+                ? "bg-emerald-950/90 border-emerald-400/50 text-emerald-100"
+                : toast.tone === "warn"
+                ? "bg-rose-950/90 border-rose-400/50 text-rose-100"
+                : "bg-[#0b1528]/95 border-amber-400/50 text-amber-50"
+            }`}
+          >
+            {toast.text}
+          </div>
+        </div>
+      )}
 
       {/* Модальное окно Кольца Чудес и Новогодней Распаковки */}
       <MiracleRingModal
