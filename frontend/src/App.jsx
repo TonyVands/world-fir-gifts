@@ -4,6 +4,10 @@ import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
+import { ShaderPass } from "three/examples/jsm/postprocessing/ShaderPass.js";
+import { HorizontalTiltShiftShader } from "three/examples/jsm/shaders/HorizontalTiltShiftShader.js";
+import { VerticalTiltShiftShader } from "three/examples/jsm/shaders/VerticalTiltShiftShader.js";
+import { createRealisticFir, createNightEnvironment } from "./scene/realisticFir.js";
 import { computeDeterministicGenomeHash } from "./lib/genome.js";
 import { inspectVoxelGeometrySafety } from "./lib/voxelSafety.js";
 import { inspectContentSafety, normalizeForModeration } from "./lib/moderation.js";
@@ -43,6 +47,11 @@ const GIFT_ORB_SCALE = 1.65;
 const ZOOM_MIN = 0.5;
 const ZOOM_MAX = 1.3;
 const WELCOME_SEEN_KEY = "wfg_welcome_seen_v1";
+// Новый облик Ёлки (реалистичная процедурная ель + киношная атмосфера).
+// Пока включается ссылкой ?look=new, текущий вид остаётся по умолчанию.
+const LOOK_NEW =
+  typeof window !== "undefined" &&
+  new URLSearchParams(window.location.search).get("look") === "new";
 const UNLOCK_TARGET_MS = new Date("2026-12-31T23:59:59Z").getTime();
 
 // ============================================================================
@@ -3551,14 +3560,15 @@ export default function App() {
   const scrollTargetRef = useRef(9.5);
   // Рождественская погода и управление снегопадом (v15.1 Mobile-First)
   const [weatherPresetId, setWeatherPresetId] = useState("christmas_night");
-  const [snowDensityMultiplier, setSnowDensityMultiplier] = useState(0.7);
-  const [isForegroundSnowOn, setIsForegroundSnowOn] = useState(true);
+  const [snowDensityMultiplier, setSnowDensityMultiplier] = useState(LOOK_NEW ? 0.35 : 0.7);
+  // В новом облике крупные «боке»-хлопья поверх экрана выключены: они спорят с елью.
+  const [isForegroundSnowOn, setIsForegroundSnowOn] = useState(!LOOK_NEW);
   const [isHearthSoundOn, setIsHearthSoundOn] = useState(false);
   const [isWeatherDrawerOpen, setIsWeatherDrawerOpen] = useState(false);
   const [isMobileCardExpanded, setIsMobileCardExpanded] = useState(false);
 
   const weatherPresetRef = useRef(CHRISTMAS_ATMOSPHERE_PRESETS[0]);
-  const snowDensityRef = useRef(0.7);
+  const snowDensityRef = useRef(LOOK_NEW ? 0.35 : 0.7);
 
   const [selectedGift, setSelectedGift] = useState(null);
   const [isInspectModalOpen, setIsInspectModalOpen] = useState(false);
@@ -3597,6 +3607,8 @@ export default function App() {
   const [toast, setToast] = useState(null);
   const toastTimerRef = useRef(null);
   const zoomTargetRef = useRef(1);
+  const firApiRef = useRef(null);
+  const lastHangersRef = useRef([]);
   const [isWelcomeOpen, setIsWelcomeOpen] = useState(() => {
     try {
       return !localStorage.getItem(WELCOME_SEEN_KEY);
@@ -3798,6 +3810,7 @@ export default function App() {
     const instanceToSeq = [];
     const candleMeta = [];
     const orbHaloMeta = [];
+    const hangers = [];
     let globeIdx = 0;
     let globalVoxelIdx = 0;
 
@@ -3892,6 +3905,8 @@ export default function App() {
         hasCandle: cCount > 0,
       });
 
+      hangers.push({ x: worldX, z: worldZ, topY: worldY + 0.98 * ORB });
+
       orbHaloMeta.push({
         worldX,
         worldY: worldY + 0.14 * ORB,
@@ -3905,6 +3920,8 @@ export default function App() {
     });
 
     globeInstanceToSeqRef.current = instanceToSeq;
+    lastHangersRef.current = hangers;
+    if (firApiRef.current) firApiRef.current.setGiftHangers(hangers);
 
     glassGlobeMesh.count = globeIdx;
     pedestalMesh.count = globeIdx;
@@ -4755,6 +4772,7 @@ export default function App() {
           tz
         );
         treeLayer.rotation.y = tIdx + layer;
+        treeLayer.userData.oldForest = true;
         clearingGroup.add(treeLayer);
       }
     }
@@ -5120,6 +5138,115 @@ export default function App() {
       });
     };
 
+    // ======================================================================
+    // НОВЫЙ ОБЛИК (?look=new): реалистичная ель, HDR-свет, туман, DOF
+    // ======================================================================
+    let fir = null;
+    let envRT = null;
+    if (LOOK_NEW) {
+      const isMobileGpu =
+        window.matchMedia?.("(pointer: coarse)").matches || window.innerWidth < 760;
+      // старую ель, декор, шумные эффекты прячем (объекты остаются, но не рисуются)
+      [
+        trunkMesh,
+        coreCrownGroup,
+        boughInstanced,
+        snowCapInstanced,
+        pineconeInstanced,
+        frostSparkles,
+        decorGroup,
+        garlandInstanced,
+        garlandHalos,
+        snowCrystalInstanced,
+        orbHalos,
+        haloInstanced,
+      ].forEach((o) => {
+        if (o) o.visible = false;
+      });
+      clearingGroup.children.forEach((c) => {
+        if (c.userData.oldForest) c.visible = false;
+      });
+
+      fir = createRealisticFir({ isMobile: isMobileGpu });
+      scene.add(fir.group);
+      firApiRef.current = fir;
+      fir.setGiftHangers(lastHangersRef.current);
+
+      // освещение от процедурной HDR-панорамы ночного неба
+      envRT = createNightEnvironment(renderer);
+      scene.environment = envRT.texture;
+      scene.environmentIntensity = 1.15;
+
+      // холодная луна + слабое небо; тёплый свет дают гирлянда и фонари
+      hemiLight.color.set("#6f86c4");
+      hemiLight.groundColor.set("#141a2c");
+      hemiLight.intensity = 0.35;
+      dirLight.color.set("#c4d4ff");
+      dirLight.intensity = 1.35;
+      dirLight.position.set(-40, 80, -30);
+      starPointLight.intensity = 5;
+
+      // глубокое ночное небо без фиолетовой «авроры» и мягкий туман
+      auroraUniforms.uTopColor.value.set("#040915");
+      auroraUniforms.uBottomColor.value.set("#17233f");
+      auroraUniforms.uAuroraStrength.value = 0.0;
+
+      // Настоящая пятиконечная звезда вместо двух жёлтых ромбов
+      starCoreA.visible = false;
+      starCoreB.visible = false;
+      const starShape = new THREE.Shape();
+      for (let i = 0; i <= 10; i++) {
+        const r = i % 2 === 0 ? 1.45 : 0.6;
+        const a = (i / 10) * Math.PI * 2 + Math.PI / 2;
+        if (i === 0) starShape.moveTo(Math.cos(a) * r, Math.sin(a) * r);
+        else starShape.lineTo(Math.cos(a) * r, Math.sin(a) * r);
+      }
+      const starGeo = new THREE.ExtrudeGeometry(starShape, {
+        depth: 0.32,
+        bevelEnabled: true,
+        bevelThickness: 0.14,
+        bevelSize: 0.12,
+        bevelSegments: 3,
+      });
+      starGeo.center();
+      const newStar = new THREE.Mesh(
+        starGeo,
+        new THREE.MeshStandardMaterial({
+          color: "#ffe2a0",
+          emissive: "#ffb347",
+          emissiveIntensity: 1.8,
+          metalness: 0.65,
+          roughness: 0.28,
+        })
+      );
+      topStarGroup.add(newStar);
+      scene.background.set("#040915");
+      scene.fog = new THREE.FogExp2("#0d1830", 0.0085);
+
+      renderer.toneMappingExposure = 1.05;
+      // свечение — только у по-настоящему ярких источников (гирлянда, звезда)
+      bloomPass.strength = 0.55;
+      bloomPass.radius = 0.55;
+      bloomPass.threshold = 0.82;
+
+      // киношная глубина резкости: ель в фокусе, верх и низ кадра мягко размыты
+      const hBlur = new ShaderPass(HorizontalTiltShiftShader);
+      const vBlur = new ShaderPass(VerticalTiltShiftShader);
+      const blurAmount = isMobileGpu ? 1.6 : 2.4;
+      hBlur.uniforms.h.value = blurAmount / container.clientWidth;
+      vBlur.uniforms.v.value = blurAmount / container.clientHeight;
+      hBlur.uniforms.r.value = 0.5;
+      vBlur.uniforms.r.value = 0.5;
+      composer.insertPass(hBlur, composer.passes.length - 1);
+      composer.insertPass(vBlur, composer.passes.length - 1);
+
+      if (typeof snowPointsMat !== "undefined" && snowPointsMat) {
+        snowPointsMat.size *= 0.45;
+        snowPointsMat.opacity = Math.min(snowPointsMat.opacity ?? 1, 0.6);
+      }
+      console.info("[WorldFir] Новый облик:", fir.stats);
+    }
+
     const clampZoom = (z) => Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, z));
     let isPinching = false;
     let pinchStartDist = 0;
@@ -5284,15 +5411,19 @@ export default function App() {
 
       // Применяем параметры выбранной Рождественской Погоды к небу, туману и свету
       auroraUniforms.uTime.value = elapsed;
-      auroraUniforms.uTopColor.value.set(preset.skyTop);
-      auroraUniforms.uBottomColor.value.set(preset.skyBottom);
-      auroraUniforms.uAuroraStrength.value = preset.auroraStrength;
-      scene.background.set(preset.skyTop);
-      scene.fog.color.set(preset.fogColor);
-      hemiLight.color.set(preset.hemiSky);
-      hemiLight.groundColor.set(preset.hemiGround);
-      dirLight.color.set(preset.dirColor);
-      dirLight.intensity = preset.dirIntensity;
+      if (fir) {
+        fir.update(elapsed);
+      } else {
+        auroraUniforms.uTopColor.value.set(preset.skyTop);
+        auroraUniforms.uBottomColor.value.set(preset.skyBottom);
+        auroraUniforms.uAuroraStrength.value = preset.auroraStrength;
+        scene.background.set(preset.skyTop);
+        scene.fog.color.set(preset.fogColor);
+        hemiLight.color.set(preset.hemiSky);
+        hemiLight.groundColor.set(preset.hemiGround);
+        dirLight.color.set(preset.dirColor);
+        dirLight.intensity = preset.dirIntensity;
+      }
 
       scrollDepth += (scrollTargetRef.current - scrollDepth) * 0.08;
       const spiralAngle = scrollDepth * 0.18 + manualAzimuthOffset;
@@ -5320,6 +5451,11 @@ export default function App() {
       if (orbHaloMatRef.current) orbHaloMatRef.current.uniforms.uTime.value = elapsed;
       starGlow.scale.setScalar(9.5 + Math.sin(elapsed * 2.6) * 1.2);
       starGlow.material.opacity = 0.5 + 0.18 * Math.sin(elapsed * 3.1);
+      if (fir) {
+        // в новом облике звезда — аккуратный огонёк, а не жёлтое пятно на полнеба
+        starGlow.scale.multiplyScalar(0.42);
+        starGlow.material.opacity *= 0.7;
+      }
       coreCrownGroup.rotation.z = Math.sin(elapsed * 0.55) * 0.0035;
       coreCrownGroup.rotation.x = Math.cos(elapsed * 0.42) * 0.0025;
       boughInstanced.rotation.z = coreCrownGroup.rotation.z;
@@ -5470,6 +5606,11 @@ export default function App() {
     return () => {
       cancelAnimationFrame(animFrameId);
       window.removeEventListener("resize", handleResize);
+      if (fir) {
+        fir.dispose();
+        firApiRef.current = null;
+      }
+      if (envRT) envRT.dispose();
       window.removeEventListener("mousemove", onMouseMove);
       window.removeEventListener("mouseup", onMouseUp);
       window.removeEventListener("touchend", onTouchEnd);
