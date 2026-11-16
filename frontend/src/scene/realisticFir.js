@@ -555,10 +555,13 @@ export function createRealisticFir({ isMobile = false } = {}) {
     hangers.forEach((h) => {
       const a = Math.atan2(h.z, h.x);
       const rr = Math.hypot(h.x, h.z);
-      const tipY = h.topY + 1.15;
-      const tip = new THREE.Vector3(Math.cos(a) * (rr + 0.1), tipY, Math.sin(a) * (rr + 0.1));
-      const baseR = Math.max(0.5, rr * 0.45);
-      const base = new THREE.Vector3(Math.cos(a) * baseR, tipY + rr * 0.12, Math.sin(a) * baseR);
+      // Подвес выходит ИЗ кроны на высоте шара: основание не выше верхних
+      // мутовок, кончик чуть над колпачком — ветка не висит в воздухе.
+      const tipY = h.topY + 0.75;
+      const tip = new THREE.Vector3(Math.cos(a) * (rr + 0.05), tipY, Math.sin(a) * (rr + 0.05));
+      const baseR = Math.max(0.5, rr * 0.4);
+      const baseY = Math.min(tipY + rr * 0.08, TREE_TOP_Y - 2.0);
+      const base = new THREE.Vector3(Math.cos(a) * baseR, baseY, Math.sin(a) * baseR);
       layBranch({
         base,
         tip,

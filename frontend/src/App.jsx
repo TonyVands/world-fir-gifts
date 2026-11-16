@@ -1314,7 +1314,7 @@ export function computeFibonacciSpiralSlot(sequenceNumber) {
 // Раскладка шаров для нового облика: верхний шар висит ниже звезды и макушки,
 // нижний — над снежной «юбкой». Шаг подстраивается под число шаров, поэтому
 // ни 10, ни 500 подарков не уходят ни в звезду, ни под снег.
-const DISPLAY_TOP_Y = 4.6; // y_height верхнего шара (мир: 60 - 4.6 = 55.4)
+const DISPLAY_TOP_Y = 6.2; // y_height верхнего шара (мир: 60 - 6.2 = 53.8)
 const DISPLAY_BOTTOM_Y = 58.2; // y_height нижнего шара (мир ≈ 1.8)
 const DISPLAY_MAX_STEP = 1.15;
 export function computeDisplaySlot(sequenceNumber, total) {
@@ -1322,11 +1322,13 @@ export function computeDisplaySlot(sequenceNumber, total) {
   const span = DISPLAY_BOTTOM_Y - DISPLAY_TOP_Y;
   const step = total > 1 ? Math.min(DISPLAY_MAX_STEP, span / (total - 1)) : 0;
   const yHeight = DISPLAY_TOP_Y + sequenceNumber * step;
-  const foliageEdge = getConeEnvelopeRadius(yHeight + 1.2) * 0.88;
-  const tierWave = 0.24 * Math.sin(sequenceNumber * 0.7);
+  // Кончики лап новой ели: envelope + 1.25. Шар висит сразу за ними, а не в
+  // пустоте на 3 единицы дальше — иначе ветка-подвес торчит в воздухе.
+  const foliageTip = getConeEnvelopeRadius(yHeight) + 1.25;
+  const tierWave = 0.22 * Math.sin(sequenceNumber * 0.7);
   return {
     ...base,
-    radius_offset: Number((foliageEdge + 3.3 + tierWave).toFixed(4)),
+    radius_offset: Number((foliageTip + 1.35 + tierWave).toFixed(4)),
     y_height: Number(yHeight.toFixed(4)),
   };
 }
@@ -1552,6 +1554,10 @@ class ChamberOrchestraSynth {
   }
 
   stop() {
+    if (this.liveTimer) {
+      window.clearInterval(this.liveTimer);
+      this.liveTimer = null;
+    }
     this.timers.forEach((t) => window.clearTimeout(t));
     this.timers = [];
 
@@ -1964,6 +1970,68 @@ class ChamberOrchestraSynth {
     this.timers.push(endTid);
   }
 
+  /**
+   * «Живое» воспроизведение для секвенсора: шаги планируются с опережением
+   * ~120 мс и каждый раз читают актуальный паттерн через getPattern(), поэтому
+   * правки нот и темпа слышны сразу, без перезапуска. getPattern() → {tempo,
+   * loop, celesta, harp, cello, flute, drums}. Шаг сообщается через notify().
+   */
+  playLive(playbackId, getPattern, startStep = 0) {
+    this.stop();
+    const bus = this.createFreshSessionBus();
+    if (!this.ctx || !bus) return;
+    this.activePlayingId = playbackId;
+    let step = Math.max(0, Math.min(15, startStep | 0));
+    let nextTime = this.ctx.currentTime + 0.05;
+    const voices = ["celesta", "harp", "cello", "flute"];
+    const lengthMul = { celesta: 1, harp: 1, cello: 1.4, flute: 1.1 };
+    const tick = () => {
+      if (this.activePlayingId !== playbackId || !this.ctx) return;
+      const pat = getPattern() || {};
+      const stepSec = 60 / Math.max(40, Math.min(220, pat.tempo || 104)) / 2;
+      while (nextTime < this.ctx.currentTime + 0.12) {
+        for (const v of voices) {
+          const n = (pat[v] || [])[step] || 0;
+          if (n > 0 && this.isInstrumentAudible(v)) {
+            this.triggerVoice(v, NOTE_FREQUENCIES[n], nextTime, stepSec * lengthMul[v], bus);
+          }
+        }
+        const d = (pat.drums || [])[step] || 0;
+        if (d > 0 && this.isInstrumentAudible("drums")) this.triggerDrumHit(d, nextTime, bus);
+        const shown = step;
+        const delay = Math.max(0, (nextTime - this.ctx.currentTime) * 1000);
+        this.timers.push(
+          window.setTimeout(() => {
+            if (this.activePlayingId === playbackId) this.notify(shown);
+          }, delay)
+        );
+        if (this.timers.length > 96) this.timers = this.timers.slice(-48);
+        nextTime += stepSec;
+        step += 1;
+        if (step >= 16) {
+          step = 0;
+          if (!pat.loop) {
+            // доигрываем последний шаг и останавливаемся
+            window.clearInterval(this.liveTimer);
+            this.liveTimer = null;
+            const endDelay = Math.max(0, (nextTime - this.ctx.currentTime) * 1000);
+            this.timers.push(
+              window.setTimeout(() => {
+                if (this.activePlayingId === playbackId) {
+                  this.activePlayingId = null;
+                  this.notify(null);
+                }
+              }, endDelay)
+            );
+            return;
+          }
+        }
+      }
+    };
+    this.liveTimer = window.setInterval(tick, 25);
+    tick();
+  }
+
   playOwlChime() {
     this.init();
     if (!this.ctx) return;
@@ -2258,6 +2326,320 @@ function VoxelSnowglobe3DViewer({
 // ============================================================================
 // 4. МОДАЛЬНОЕ ОКНО МАСТЕРСКОЙ 3D-ШАРА, КВИНТОВОГО КРУГА И 5 ДОРОЖЕК (v14.0)
 // ============================================================================
+// ============================================================================
+// 4.1. СТУДИЯ МЕЛОДИИ: привычный шаговый секвенсор (16 шагов × 5 дорожек)
+// ============================================================================
+const SCALE_SHORT = {
+  pentatonic: "Пентатоника",
+  c_major: "Мажор",
+  a_minor: "Минор",
+  dorian: "Северный",
+  lydian: "Сказочный",
+  harmonic_minor: "Щелкунчик",
+  mixolydian: "Хоровод",
+  phrygian: "Кристалл",
+};
+
+const MELODY_MOODS = [
+  { id: "tale", label: "❄️ Сказка", text: "сказочный рождественский вальс со снежными бубенцами" },
+  { id: "lullaby", label: "🌙 Колыбельная", text: "тихая нежная колыбельная зимней ночи" },
+  { id: "party", label: "🎉 Праздник", text: "весёлый праздничный марш, бубенцы и смех" },
+  { id: "aurora", label: "✨ Сияние", text: "волшебное северное сияние и звёзды над тайгой" },
+];
+
+const INSTRUMENT_SHORT = {
+  celesta: { icon: "🔔", name: "Челеста", cell: "bg-amber-300", ring: "ring-amber-300" },
+  harp: { icon: "🪕", name: "Арфа", cell: "bg-sky-300", ring: "ring-sky-300" },
+  cello: { icon: "🎻", name: "Виолончель", cell: "bg-rose-400", ring: "ring-rose-400" },
+  flute: { icon: "🪈", name: "Флейта", cell: "bg-emerald-300", ring: "ring-emerald-300" },
+  drums: { icon: "🥁", name: "Ритм", cell: "bg-violet-300", ring: "ring-violet-300" },
+};
+
+const STUDIO_PLAYBACK_ID = "workshop-live";
+
+function MelodyStudio({
+  tracks,
+  setTrack,
+  tempo,
+  setTempo,
+  scaleId,
+  onScaleChange,
+  onCompose,
+  autoplayTick = 0,
+  harmonyPanel,
+}) {
+  const [active, setActive] = useState("celesta");
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [playStep, setPlayStep] = useState(null);
+  const [pausedAt, setPausedAt] = useState(0);
+  const [loop, setLoop] = useState(true);
+  const [showHarmony, setShowHarmony] = useState(false);
+  const [mutes, setMutes] = useState({});
+  const patternRef = useRef(null);
+  patternRef.current = { tempo, loop, ...tracks };
+
+  useEffect(() => {
+    const unsub = musicBoxSynth.subscribe((st) => {
+      const mine = st.playingId === STUDIO_PLAYBACK_ID;
+      setIsPlaying(mine);
+      if (mine && st.step != null) setPlayStep(st.step);
+      if (!mine) setPlayStep(null);
+    });
+    return () => {
+      unsub();
+      if (musicBoxSynth.activePlayingId === STUDIO_PLAYBACK_ID) musicBoxSynth.stop();
+      // заглушки студии не должны влиять на прослушивание шаров на Ёлке
+      Object.keys(INSTRUMENT_SHORT).forEach((id) => musicBoxSynth.setTrackMix(id, { muted: false }));
+    };
+  }, []);
+
+  useEffect(() => {
+    Object.keys(INSTRUMENT_SHORT).forEach((id) => musicBoxSynth.setTrackMix(id, { muted: Boolean(mutes[id]) }));
+  }, [mutes]);
+
+  const play = (from = pausedAt) => musicBoxSynth.playLive(STUDIO_PLAYBACK_ID, () => patternRef.current, from);
+
+  // «Сочинить», смена лада или аккордов — сразу слышим результат с начала
+  const seenTickRef = useRef(autoplayTick);
+  useEffect(() => {
+    if (autoplayTick === seenTickRef.current) return;
+    seenTickRef.current = autoplayTick;
+    play(0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoplayTick]);
+  const pause = () => {
+    setPausedAt(playStep == null ? 0 : (playStep + 1) % 16);
+    musicBoxSynth.stop();
+  };
+  const stop = () => {
+    setPausedAt(0);
+    musicBoxSynth.stop();
+  };
+
+  const scale = SCALE_MODES.find((m) => m.id === scaleId) || SCALE_MODES[0];
+  const rows =
+    active === "drums"
+      ? DRUM_INSTRUMENTS.filter((r) => r.index > 0)
+      : NOTE_META.filter((r) => r.index > 0 && scale.notes.includes(r.index));
+  const track = tracks[active] || [];
+  const meta = INSTRUMENT_SHORT[active];
+  const cursor = isPlaying ? playStep : null;
+
+  const toggleCell = (stepIdx, noteVal) => {
+    musicBoxSynth.playSingleNote(active, noteVal);
+    setTrack(active, (prev) => prev.map((n, i) => (i === stepIdx ? (n === noteVal ? 0 : noteVal) : n)));
+  };
+
+  const btn = "h-10 rounded-xl flex items-center justify-center transition";
+  return (
+    <div className="space-y-3">
+      {/* Транспорт: как в любом плеере/секвенсоре */}
+      <div className="flex flex-wrap items-center gap-2 rounded-2xl bg-white/5 border border-white/10 p-2">
+        <button
+          type="button"
+          onClick={() => (isPlaying ? pause() : play())}
+          aria-label={isPlaying ? "Пауза" : "Играть"}
+          className={`${btn} w-12 bg-amber-300 hover:bg-amber-200 text-slate-950 text-lg font-bold`}
+        >
+          {isPlaying ? "❚❚" : "▶"}
+        </button>
+        <button
+          type="button"
+          onClick={stop}
+          aria-label="Стоп"
+          className={`${btn} w-10 bg-white/5 hover:bg-white/10 text-slate-200`}
+        >
+          ■
+        </button>
+        <button
+          type="button"
+          onClick={() => setLoop((v) => !v)}
+          aria-pressed={loop}
+          aria-label="Повтор"
+          title="Повтор"
+          className={`${btn} w-10 ${loop ? "bg-amber-300/20 text-amber-200 ring-1 ring-amber-300/50" : "bg-white/5 text-slate-400"}`}
+        >
+          🔁
+        </button>
+        <div className="flex items-center gap-2 px-2 min-w-[150px] flex-1">
+          <span className="text-[11px] text-slate-400 whitespace-nowrap">Темп {tempo}</span>
+          <input
+            type="range"
+            min={60}
+            max={160}
+            step={2}
+            value={tempo}
+            onChange={(e) => setTempo(Number(e.target.value))}
+            aria-label="Темп"
+            className="flex-1 accent-amber-300"
+          />
+        </div>
+        <div className="font-mono text-xs text-slate-400 w-12 text-right">
+          {String((cursor ?? pausedAt) + 1).padStart(2, "0")}/16
+        </div>
+      </div>
+
+      {/* Сочинить за меня */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="text-[11px] text-slate-400 mr-1">Сочинить:</span>
+        {MELODY_MOODS.map((m) => (
+          <button
+            key={m.id}
+            type="button"
+            onClick={() => onCompose(m.text)}
+            className="px-3 py-1.5 rounded-full bg-white/5 hover:bg-white/10 border border-white/10 text-xs text-slate-200"
+          >
+            {m.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Дорожки */}
+      <div className="flex gap-1.5 overflow-x-auto pb-0.5">
+        {Object.entries(INSTRUMENT_SHORT).map(([id, m]) => {
+          const used = (tracks[id] || []).some((n) => n > 0);
+          return (
+            <div key={id} className="flex shrink-0">
+              <button
+                type="button"
+                onClick={() => setActive(id)}
+                className={`pl-3 pr-2 py-1.5 rounded-l-xl text-xs whitespace-nowrap border ${
+                  active === id
+                    ? `bg-white/15 border-white/25 text-white ring-1 ${m.ring}`
+                    : "bg-white/5 border-white/10 text-slate-300"
+                }`}
+              >
+                {m.icon} {m.name}
+                {used && <span className={`ml-1.5 inline-block w-1.5 h-1.5 rounded-full ${m.cell}`} />}
+              </button>
+              <button
+                type="button"
+                onClick={() => setMutes((p) => ({ ...p, [id]: !p[id] }))}
+                aria-label={`${mutes[id] ? "Включить" : "Заглушить"} ${m.name}`}
+                title={mutes[id] ? "Включить звук" : "Заглушить"}
+                className={`px-2 rounded-r-xl text-[11px] border border-l-0 ${
+                  mutes[id] ? "bg-rose-500/20 border-rose-400/40 text-rose-200" : "bg-white/5 border-white/10 text-slate-400"
+                }`}
+              >
+                {mutes[id] ? "🔇" : "🔈"}
+              </button>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Сетка 16 шагов с бегущей полосой */}
+      <div className="rounded-2xl bg-black/30 border border-white/10 p-1.5 sm:p-2">
+        <div>
+          <div className="grid grid-cols-[30px_repeat(16,minmax(0,1fr))] sm:grid-cols-[44px_repeat(16,minmax(0,1fr))] gap-[2px] sm:gap-[3px] mb-1">
+            <div />
+            {Array.from({ length: 16 }).map((_, i) => (
+              <button
+                key={i}
+                type="button"
+                onClick={() => (isPlaying ? play(i) : setPausedAt(i))}
+                title="Играть с этого шага"
+                className={`h-4 rounded text-[9px] font-mono ${
+                  cursor === i
+                    ? "bg-amber-300 text-slate-950"
+                    : !isPlaying && pausedAt === i
+                    ? "bg-amber-300/30 text-amber-100"
+                    : i % 4 === 0
+                    ? "text-slate-300"
+                    : "text-slate-600"
+                }`}
+              >
+                {i + 1}
+              </button>
+            ))}
+          </div>
+          {rows.map((row) => (
+            <div key={row.index} className="grid grid-cols-[30px_repeat(16,minmax(0,1fr))] sm:grid-cols-[44px_repeat(16,minmax(0,1fr))] gap-[2px] sm:gap-[3px] mb-[2px] sm:mb-[3px]">
+              <div className="text-[10px] font-mono text-slate-400 text-right pr-1.5 self-center truncate">
+                {active === "drums" ? row.short : row.label}
+              </div>
+              {Array.from({ length: 16 }).map((_, sIdx) => {
+                const on = track[sIdx] === row.index;
+                const isCur = cursor === sIdx;
+                return (
+                  <button
+                    key={sIdx}
+                    type="button"
+                    onClick={() => toggleCell(sIdx, row.index)}
+                    aria-label={`Шаг ${sIdx + 1}, ${row.label}`}
+                    aria-pressed={on}
+                    className={`h-6 rounded-[5px] transition-colors ${
+                      on
+                        ? `${meta.cell} ${isCur ? "brightness-125 scale-105" : ""}`
+                        : isCur
+                        ? "bg-amber-200/25"
+                        : Math.floor(sIdx / 4) % 2 === 0
+                        ? "bg-white/[0.07] hover:bg-white/15"
+                        : "bg-white/[0.035] hover:bg-white/15"
+                    }`}
+                  />
+                );
+              })}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          onClick={() => setTrack(active, () => Array(16).fill(0))}
+          className="px-3 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 text-xs text-slate-300"
+        >
+          Очистить «{meta.name}»
+        </button>
+        {active === "drums" &&
+          DRUM_GROOVE_PRESETS.map((gr) => (
+            <button
+              key={gr.id}
+              type="button"
+              onClick={() => setTrack("drums", () => [...gr.pattern])}
+              className="px-3 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 text-xs text-violet-200"
+            >
+              {gr.title}
+            </button>
+          ))}
+        <button
+          type="button"
+          onClick={() => setShowHarmony((v) => !v)}
+          aria-expanded={showHarmony}
+          className="ml-auto px-3 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 text-xs text-slate-300"
+        >
+          Лад и аккорды {showHarmony ? "▴" : "▾"}
+        </button>
+      </div>
+
+      {showHarmony && (
+        <div className="space-y-3 rounded-2xl bg-white/5 border border-white/10 p-3">
+          <div className="flex flex-wrap gap-1.5">
+            {SCALE_MODES.map((m) => (
+              <button
+                key={m.id}
+                type="button"
+                onClick={() => onScaleChange(m.id)}
+                title={m.mood}
+                className={`px-3 py-1.5 rounded-full text-xs border ${
+                  scaleId === m.id
+                    ? "bg-amber-300 text-slate-950 border-amber-200 font-semibold"
+                    : "bg-white/5 border-white/10 text-slate-300 hover:bg-white/10"
+                }`}
+              >
+                {SCALE_SHORT[m.id] || m.title}
+              </button>
+            ))}
+          </div>
+          {harmonyPanel}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function GiftWorkshopModal({ isOpen, onClose, onGiftCreated, remainingGifts = null, maxGifts = 3 }) {
   const [stepTab, setStepTab] = useState(0);
   const [voxels, setVoxels] = useState(() => [...VOXEL_BLUEPRINTS[0].blocks]);
@@ -2269,7 +2651,6 @@ function GiftWorkshopModal({ isOpen, onClose, onGiftCreated, remainingGifts = nu
 
   const [scaleId, setScaleId] = useState("pentatonic");
   const [tempoBpm, setTempoBpm] = useState(104);
-  const [activeInstrument, setActiveInstrument] = useState("celesta");
   const [celestaTrack, setCelestaTrack] = useState(() => [
     ...MELODY_PRESETS[0].celesta,
   ]);
@@ -2292,9 +2673,8 @@ function GiftWorkshopModal({ isOpen, onClose, onGiftCreated, remainingGifts = nu
     { sectorIdx: 0, ring: "minor", label: "Am" },
     { sectorIdx: 11, ring: "major", label: "F" },
   ]);
-  const [aiMoodPrompt, setAiMoodPrompt] = useState(
-    "Сказочный рождественский вальс со снежными бубенцами"
-  );
+  const [autoplayTick, setAutoplayTick] = useState(0);
+  const composeSeedRef = useRef(0);
 
   const [teaserTag, setTeaserTag] = useState("Тёплый маяк Севера");
   const [secretWish, setSecretWish] = useState(
@@ -2349,14 +2729,7 @@ function GiftWorkshopModal({ isOpen, onClose, onGiftCreated, remainingGifts = nu
     setHarpTrack(qHarp);
     setCelloTrack(qCello);
     setFluteTrack(qFlute);
-    musicBoxSynth.playMelody(
-      tempoBpm,
-      qCelesta,
-      qHarp,
-      qCello,
-      qFlute,
-      drumTrack
-    );
+    setAutoplayTick((t) => t + 1);
   };
 
   const handleSelectCircleSector = (sectorIdx, ring = "major") => {
@@ -2383,9 +2756,10 @@ function GiftWorkshopModal({ isOpen, onClose, onGiftCreated, remainingGifts = nu
     );
   };
 
-  const handleAiGenerateSymphony = () => {
+  const handleAiGenerateSymphony = (moodText = "") => {
+    composeSeedRef.current += 1;
     const harmonized = harmonizeOrchestraFromWish(
-      `${aiMoodPrompt} ${secretWish}`,
+      `${moodText} ${secretWish} #${composeSeedRef.current}`,
       scaleId
     );
     setTempoBpm(harmonized.tempo);
@@ -2394,36 +2768,7 @@ function GiftWorkshopModal({ isOpen, onClose, onGiftCreated, remainingGifts = nu
     setCelloTrack(harmonized.cello);
     setFluteTrack(harmonized.flute);
     setDrumTrack(harmonized.drums);
-    musicBoxSynth.playMelody(
-      harmonized.tempo,
-      harmonized.celesta,
-      harmonized.harp,
-      harmonized.cello,
-      harmonized.flute,
-      harmonized.drums
-    );
-  };
-
-  const activeTrackArr =
-    activeInstrument === "celesta"
-      ? celestaTrack
-      : activeInstrument === "harp"
-      ? harpTrack
-      : activeInstrument === "cello"
-      ? celloTrack
-      : activeInstrument === "flute"
-      ? fluteTrack
-      : drumTrack;
-
-  const setActiveTrackStep = (stepIdx, noteVal) => {
-    musicBoxSynth.playSingleNote(activeInstrument, noteVal);
-    const updater = (prev) =>
-      prev.map((n, i) => (i === stepIdx ? (n === noteVal ? 0 : noteVal) : n));
-    if (activeInstrument === "celesta") setCelestaTrack(updater);
-    else if (activeInstrument === "harp") setHarpTrack(updater);
-    else if (activeInstrument === "cello") setCelloTrack(updater);
-    else if (activeInstrument === "flute") setFluteTrack(updater);
-    else setDrumTrack(updater);
+    setAutoplayTick((t) => t + 1);
   };
 
   const handleSubmit = async () => {
@@ -2474,68 +2819,161 @@ function GiftWorkshopModal({ isOpen, onClose, onGiftCreated, remainingGifts = nu
   const subdominantIdx = (tonicSectorIdx + 11) % 12;
   const dominantIdx = (tonicSectorIdx + 1) % 12;
 
-  return (
-    <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-xl flex items-center justify-center p-2 sm:p-4 overflow-y-auto">
-      <div className="w-full max-w-5xl bg-[#091224] border border-amber-400/45 rounded-3xl shadow-2xl overflow-hidden my-auto max-h-[94vh] flex flex-col">
-        {/* Шапка Мастерской */}
-        <div className="flex items-center justify-between px-4 py-3 bg-slate-950/90 border-b border-slate-800">
-          <div className="flex items-center gap-2 min-w-0">
-            <span className="text-lg">🤲</span>
-            <h2 className="font-serif text-base sm:text-xl font-bold text-amber-50 truncate">
-              Мастерская Ручного Творчества • World Fir Gifts
-            </h2>
-            <span
-              className={`px-2 py-0.5 rounded-lg text-[10px] font-bold border whitespace-nowrap ${
-                voxelSafety.isSafe && textSafety.isSafe
-                  ? "bg-emerald-950/90 border-emerald-400/40 text-emerald-300"
-                  : "bg-rose-950/90 border-rose-400/50 text-rose-300"
-              }`}
-            >
-              🛡️ Фильтр 18+ {voxelSafety.isSafe && textSafety.isSafe ? "ОК" : "БЛОК"}
-            </span>
-            <span className="px-2 py-0.5 rounded-lg bg-amber-500/20 border border-amber-400/40 text-amber-300 text-[10px] font-mono whitespace-nowrap">
-              ✨ Свет: {liveScore.total}
-            </span>
-          </div>
-          <button
-            type="button"
-            onClick={() => {
-              musicBoxSynth.stop();
-              onClose();
-            }}
-            className="w-8 h-8 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300"
-          >
-            ✕
-          </button>
-        </div>
+  const trackSetters = {
+    celesta: setCelestaTrack,
+    harp: setHarpTrack,
+    cello: setCelloTrack,
+    flute: setFluteTrack,
+    drums: setDrumTrack,
+  };
+  const setTrack = (id, updater) => trackSetters[id]?.(updater);
+  const applyBars = (nextBars) => {
+    const built = build16StepTracksFrom4Bars(nextBars, drumTrack);
+    setCelestaTrack(built.celesta);
+    setHarpTrack(built.harp);
+    setCelloTrack(built.cello);
+    setFluteTrack(built.flute);
+  };
 
-        {/* Вкладки */}
-        <div className="grid grid-cols-3 bg-slate-950/60 border-b border-slate-800 text-xs font-bold">
-          {[
-            { idx: 0, label: "1. 🧊 3D-Воксели Шара" },
-            { idx: 1, label: "2. 🥁 Студия, Круг 5/4 & ИИ" },
-            { idx: 2, label: "3. 📜 Свиток Души" },
-          ].map((t) => (
+  const STEPS = [
+    { label: "Фигурка", icon: "🧊" },
+    { label: "Мелодия", icon: "🎵" },
+    { label: "Пожелание", icon: "✉️" },
+  ];
+  const isLast = stepTab === STEPS.length - 1;
+  const field =
+    "w-full px-3.5 py-2.5 rounded-xl bg-white/5 border border-white/10 focus:border-amber-300/60 outline-none text-sm text-white placeholder:text-slate-500";
+  const chipCls = "px-3 py-1.5 rounded-full bg-white/5 hover:bg-white/10 border border-white/10 text-xs text-slate-200";
+
+  const closeWorkshop = () => {
+    musicBoxSynth.stop();
+    onClose();
+  };
+
+  const harmonyPanel = (
+    <div className="grid grid-cols-1 md:grid-cols-[200px_1fr] gap-3 items-center">
+      <svg viewBox="0 0 240 240" className="w-48 h-48 mx-auto" aria-label="Круг аккордов">
+        {CIRCLE_OF_FIFTHS_SECTORS.map((sec, idx) => {
+          const angle = (idx * 30 - 90) * (Math.PI / 180);
+          const xMaj = 120 + Math.cos(angle) * 88;
+          const yMaj = 120 + Math.sin(angle) * 88;
+          const xMin = 120 + Math.cos(angle) * 52;
+          const yMin = 120 + Math.sin(angle) * 52;
+          const isTonic = idx === tonicSectorIdx;
+          const fillMaj = isTonic
+            ? "#fcd34d"
+            : idx === subdominantIdx
+            ? "#34d399"
+            : idx === dominantIdx
+            ? "#fb7185"
+            : "rgba(255,255,255,0.07)";
+          return (
+            <g key={sec.major}>
+              <circle cx={xMaj} cy={yMaj} r="18" fill={fillMaj} className="cursor-pointer" onClick={() => handleSelectCircleSector(idx, "major")} />
+              <text x={xMaj} y={yMaj + 4} textAnchor="middle" fill={isTonic ? "#0f172a" : "#f8fafc"} fontSize="11" fontWeight="bold" className="pointer-events-none">
+                {sec.major}
+              </text>
+              <circle cx={xMin} cy={yMin} r="13" fill={isTonic ? "#a78bfa" : "rgba(255,255,255,0.04)"} className="cursor-pointer" onClick={() => handleSelectCircleSector(idx, "minor")} />
+              <text x={xMin} y={yMin + 3} textAnchor="middle" fill="#cbd5e1" fontSize="9" className="pointer-events-none">
+                {sec.minor}
+              </text>
+            </g>
+          );
+        })}
+      </svg>
+      <div className="space-y-2">
+        <div className="text-[11px] text-slate-400">Выберите такт, затем аккорд на круге</div>
+        <div className="grid grid-cols-4 gap-1.5">
+          {barSlots.map((slot, bIdx) => (
             <button
-              key={t.idx}
+              key={bIdx}
               type="button"
-              onClick={() => setStepTab(t.idx)}
-              className={`py-2.5 px-2 border-b-2 transition whitespace-nowrap truncate ${
-                stepTab === t.idx
-                  ? "border-amber-400 text-amber-300 bg-amber-500/10"
-                  : "border-transparent text-slate-400 hover:text-slate-200"
+              onClick={() => setActiveBarIdx(bIdx)}
+              className={`py-1.5 rounded-xl border text-center ${
+                activeBarIdx === bIdx ? "border-amber-300 bg-amber-300/15" : "border-white/10 bg-white/5"
               }`}
             >
-              {t.label}
+              <div className="text-[10px] text-slate-400">Такт {bIdx + 1}</div>
+              <div className="text-sm font-mono font-bold text-amber-200">{slot.label}</div>
             </button>
           ))}
         </div>
+        <div className="flex flex-wrap gap-1.5">
+          {GUIDED_CIRCLE_PROGRESSIONS.map((prog) => (
+            <button
+              key={prog.id}
+              type="button"
+              title={prog.formula}
+              onClick={() => {
+                const next = prog.steps.map((st) => ({
+                  sectorIdx: st.sectorIdx,
+                  ring: st.ring,
+                  label:
+                    st.ring === "minor"
+                      ? CIRCLE_OF_FIFTHS_SECTORS[st.sectorIdx].minor
+                      : CIRCLE_OF_FIFTHS_SECTORS[st.sectorIdx].major,
+                }));
+                setBarSlots(next);
+                applyBars(next);
+                setAutoplayTick((t) => t + 1);
+              }}
+              className={chipCls}
+            >
+              {prog.title.replace(/\s*\(.*\)\s*$/, "")}
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
 
-        {/* Тело вкладки */}
-        <div className="p-4 sm:p-5 overflow-y-auto space-y-4 flex-1">
+  return (
+    <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-end sm:items-center justify-center sm:p-4">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Новый шар"
+        className={`${glassPanel} w-full max-w-4xl rounded-t-3xl sm:rounded-3xl overflow-hidden flex flex-col h-[94vh] sm:h-auto sm:max-h-[92vh]`}
+      >
+        {/* Шапка: заголовок + шаги */}
+        <div className="px-4 sm:px-5 pt-4 pb-3 border-b border-white/10">
+          <div className="flex items-center justify-between gap-3">
+            <div className="font-serif text-xl text-amber-50">Новый шар</div>
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] text-slate-400 hidden sm:inline">✨ {liveScore.total}</span>
+              <button
+                type="button"
+                onClick={closeWorkshop}
+                aria-label="Закрыть"
+                className="w-9 h-9 rounded-xl bg-white/5 hover:bg-white/10 text-slate-300"
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+          <div className="mt-3 grid grid-cols-3 gap-1.5">
+            {STEPS.map((st, i) => (
+              <button
+                key={st.label}
+                type="button"
+                onClick={() => setStepTab(i)}
+                aria-current={stepTab === i ? "step" : undefined}
+                className="text-left"
+              >
+                <div className={`h-1 rounded-full ${i <= stepTab ? "bg-amber-300" : "bg-white/10"}`} />
+                <div className={`mt-1.5 text-xs ${stepTab === i ? "text-amber-100" : "text-slate-400"}`}>
+                  {st.icon} {st.label}
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Тело шага */}
+        <div className="p-4 sm:p-5 overflow-y-auto flex-1">
           {stepTab === 0 && (
-            <div className="grid grid-cols-1 md:grid-cols-12 gap-5 items-start">
-              <div className="md:col-span-5 flex flex-col items-center bg-slate-950/70 border border-slate-800 rounded-2xl p-4 space-y-3">
+            <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)] gap-5 items-start">
+              <div className="flex flex-col items-center gap-3">
                 <VoxelSnowglobe3DViewer
                   voxels={voxels}
                   baseMaterial={baseMaterial}
@@ -2543,52 +2981,30 @@ function GiftWorkshopModal({ isOpen, onClose, onGiftCreated, remainingGifts = nu
                   engravingText={engravingText}
                   size="lg"
                 />
-                <div className="w-full space-y-2">
-                  <label className="text-[11px] text-slate-400 block">
-                    Гравировка на подиуме шара:
-                  </label>
-                  <input
-                    type="text"
-                    maxLength={44}
-                    value={engravingText}
-                    onChange={(e) => setEngravingText(e.target.value)}
-                    className="w-full px-3 py-1.5 rounded-xl bg-slate-900 border border-slate-700 text-xs text-amber-100"
-                  />
-                </div>
+                <input
+                  type="text"
+                  maxLength={44}
+                  value={engravingText}
+                  onChange={(e) => setEngravingText(e.target.value)}
+                  placeholder="Надпись на подставке"
+                  aria-label="Надпись на подставке"
+                  className={field + " text-center"}
+                />
               </div>
 
-              <div className="md:col-span-7 space-y-3">
-                <div className="flex flex-wrap gap-1.5">
-                  {VOXEL_BLUEPRINTS.map((bp) => (
-                    <button
-                      key={bp.id}
-                      type="button"
-                      onClick={() => setVoxels([...bp.blocks])}
-                      className="px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs text-amber-200 border border-amber-400/25"
-                    >
-                      {bp.title}
+              <div className="space-y-3.5">
+                <div>
+                  <div className="text-[11px] text-slate-400 mb-1.5">Начать с шаблона</div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {VOXEL_BLUEPRINTS.map((bp) => (
+                      <button key={bp.id} type="button" onClick={() => setVoxels([...bp.blocks])} className={chipCls}>
+                        {bp.title}
+                      </button>
+                    ))}
+                    <button type="button" onClick={() => setVoxels([])} className={chipCls + " text-slate-400"}>
+                      С нуля
                     </button>
-                  ))}
-                </div>
-
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="text-xs text-slate-400">
-                    Слой высоты Y ({activeLayerY + 1}/8):
-                  </span>
-                  {[0, 1, 2, 3, 4, 5, 6, 7].map((ly) => (
-                    <button
-                      key={ly}
-                      type="button"
-                      onClick={() => setActiveLayerY(ly)}
-                      className={`w-7 h-7 rounded-lg text-xs font-bold ${
-                        activeLayerY === ly
-                          ? "bg-amber-400 text-slate-950"
-                          : "bg-slate-800 text-slate-300"
-                      }`}
-                    >
-                      {ly + 1}
-                    </button>
-                  ))}
+                  </div>
                 </div>
 
                 <div className="flex flex-wrap items-center gap-1.5">
@@ -2598,66 +3014,64 @@ function GiftWorkshopModal({ isOpen, onClose, onGiftCreated, remainingGifts = nu
                       type="button"
                       onClick={() => setSelectedColor(c.hex)}
                       style={{ backgroundColor: c.hex }}
-                      className={`w-6 h-6 rounded-full border-2 ${
-                        selectedColor === c.hex
-                          ? "border-white scale-110"
-                          : "border-slate-700"
-                      }`}
+                      aria-label={c.name}
                       title={c.name}
+                      className={`w-7 h-7 rounded-full transition ${
+                        selectedColor === c.hex ? "ring-2 ring-white ring-offset-2 ring-offset-slate-900 scale-110" : ""
+                      }`}
                     />
                   ))}
                 </div>
 
-                <div className="grid grid-cols-8 gap-1.5 bg-slate-950 p-3 rounded-2xl border border-slate-800 max-w-[290px]">
-                  {Array.from({ length: 64 }).map((_, idx) => {
-                    const vx = idx % 8;
-                    const vz = Math.floor(idx / 8);
-                    const existing = voxels.find(
-                      (b) => b.x === vx && b.y === activeLayerY && b.z === vz
-                    );
-                    return (
+                <div className="flex gap-3 items-start">
+                  <div className="grid grid-cols-8 gap-1 p-2 rounded-2xl bg-black/30 border border-white/10">
+                    {Array.from({ length: 64 }).map((_, idx) => {
+                      const vx = idx % 8;
+                      const vz = Math.floor(idx / 8);
+                      const existing = voxels.find((b) => b.x === vx && b.y === activeLayerY && b.z === vz);
+                      const below = !existing && voxels.some((b) => b.x === vx && b.y === activeLayerY - 1 && b.z === vz);
+                      return (
+                        <button
+                          key={idx}
+                          type="button"
+                          aria-label={`Кубик ${vx + 1}×${vz + 1}`}
+                          onClick={() => {
+                            if (existing) {
+                              setVoxels((prev) =>
+                                prev.filter((b) => !(b.x === vx && b.y === activeLayerY && b.z === vz))
+                              );
+                            } else {
+                              setVoxels((prev) => [...prev, { x: vx, y: activeLayerY, z: vz, color: selectedColor }]);
+                            }
+                          }}
+                          style={{ backgroundColor: existing ? existing.color : undefined }}
+                          className={`w-8 h-8 sm:w-7 sm:h-7 rounded-md transition ${
+                            existing ? "ring-1 ring-white/60" : below ? "bg-white/15" : "bg-white/5 hover:bg-white/15"
+                          }`}
+                        />
+                      );
+                    })}
+                  </div>
+                  <div className="flex flex-col-reverse gap-1" aria-label="Этаж">
+                    {[0, 1, 2, 3, 4, 5, 6, 7].map((ly) => (
                       <button
-                        key={idx}
+                        key={ly}
                         type="button"
-                        onClick={() => {
-                          if (existing) {
-                            setVoxels((prev) =>
-                              prev.filter(
-                                (b) =>
-                                  !(
-                                    b.x === vx &&
-                                    b.y === activeLayerY &&
-                                    b.z === vz
-                                  )
-                              )
-                            );
-                          } else {
-                            setVoxels((prev) => [
-                              ...prev,
-                              {
-                                x: vx,
-                                y: activeLayerY,
-                                z: vz,
-                                color: selectedColor,
-                              },
-                            ]);
-                          }
-                        }}
-                        style={{
-                          backgroundColor: existing ? existing.color : undefined,
-                        }}
-                        className={`w-7 h-7 rounded-md border transition ${
-                          existing
-                            ? "border-white"
-                            : "bg-slate-900 border-slate-800 hover:border-amber-400/50"
+                        onClick={() => setActiveLayerY(ly)}
+                        aria-label={`Этаж ${ly + 1}`}
+                        className={`w-8 h-7 rounded-lg text-xs ${
+                          activeLayerY === ly ? "bg-amber-300 text-slate-950 font-bold" : "bg-white/5 text-slate-400"
                         }`}
-                      />
-                    );
-                  })}
+                      >
+                        {ly + 1}
+                      </button>
+                    ))}
+                  </div>
                 </div>
+                <div className="text-[11px] text-slate-500">Этаж {activeLayerY + 1} из 8 · светлые клетки — кубики этажом ниже</div>
 
                 {!voxelSafety.isSafe && (
-                  <div className="p-3 rounded-xl bg-rose-950/80 border border-rose-400/50 text-xs text-rose-200">
+                  <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-400/40 text-xs text-rose-200">
                     ⚠️ {voxelSafety.reason}
                   </div>
                 )}
@@ -2666,393 +3080,88 @@ function GiftWorkshopModal({ isOpen, onClose, onGiftCreated, remainingGifts = nu
           )}
 
           {stepTab === 1 && (
-            <div className="space-y-4">
-              {/* ИИ-Генератор 5 дорожек */}
-              <div className="p-3 rounded-2xl bg-gradient-to-r from-indigo-950/80 via-slate-900 to-amber-950/60 border border-amber-400/35 flex flex-col sm:flex-row gap-2">
-                <input
-                  type="text"
-                  value={aiMoodPrompt}
-                  onChange={(e) => setAiMoodPrompt(e.target.value)}
-                  placeholder="Настроение мелодии для ИИ..."
-                  className="flex-1 px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-xs text-white"
-                />
-                <button
-                  type="button"
-                  onClick={handleAiGenerateSymphony}
-                  className="px-4 py-2 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold text-xs whitespace-nowrap"
-                >
-                  ✨ Сгенерировать мелодию нейросетью
-                </button>
-              </div>
-
-              {/* 8 Музыкальных Мотивов и Ладов */}
-              <div>
-                <div className="text-[11px] uppercase tracking-wider text-slate-400 mb-1.5">
-                  Музыкальный лад и мотив (8 строев):
-                </div>
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                  {SCALE_MODES.map((m) => (
-                    <button
-                      key={m.id}
-                      type="button"
-                      onClick={() => handleScaleChange(m.id)}
-                      className={`p-2 rounded-xl border text-left transition ${
-                        scaleId === m.id
-                          ? "border-amber-400 bg-amber-500/15 text-white"
-                          : "border-slate-800 bg-slate-950/60 text-slate-300 hover:border-slate-700"
-                      }`}
-                    >
-                      <div className="text-xs font-bold truncate">{m.title}</div>
-                      <div className="text-[10px] text-amber-300/80 truncate">
-                        {m.badge}
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Интерактивный Квинто-Квартовый Круг */}
-              <div className="grid grid-cols-1 md:grid-cols-12 gap-4 items-center bg-slate-950/75 border border-slate-800 rounded-2xl p-3.5">
-                <div className="md:col-span-5 flex flex-col items-center">
-                  <svg viewBox="0 0 240 240" className="w-52 h-52">
-                    {CIRCLE_OF_FIFTHS_SECTORS.map((sec, idx) => {
-                      const angle = (idx * 30 - 90) * (Math.PI / 180);
-                      const xMaj = 120 + Math.cos(angle) * 88;
-                      const yMaj = 120 + Math.sin(angle) * 88;
-                      const xMin = 120 + Math.cos(angle) * 52;
-                      const yMin = 120 + Math.sin(angle) * 52;
-                      const isTonic = idx === tonicSectorIdx;
-                      const isSub = idx === subdominantIdx;
-                      const isDom = idx === dominantIdx;
-                      const fillMaj = isTonic
-                        ? "#f59e0b"
-                        : isSub
-                        ? "#10b981"
-                        : isDom
-                        ? "#f43f5e"
-                        : "#1e293b";
-
-                      return (
-                        <g key={sec.major}>
-                          <circle
-                            cx={xMaj}
-                            cy={yMaj}
-                            r="18"
-                            fill={fillMaj}
-                            stroke="#475569"
-                            strokeWidth="1.4"
-                            className="cursor-pointer hover:opacity-90"
-                            onClick={() =>
-                              handleSelectCircleSector(idx, "major")
-                            }
-                          />
-                          <text
-                            x={xMaj}
-                            y={yMaj + 4}
-                            textAnchor="middle"
-                            fill={isTonic ? "#0f172a" : "#f8fafc"}
-                            fontSize="11"
-                            fontWeight="bold"
-                            className="pointer-events-none"
-                          >
-                            {sec.major}
-                          </text>
-                          <circle
-                            cx={xMin}
-                            cy={yMin}
-                            r="13"
-                            fill={isTonic ? "#7c3aed" : "#0f172a"}
-                            stroke="#334155"
-                            strokeWidth="1"
-                            className="cursor-pointer hover:opacity-90"
-                            onClick={() =>
-                              handleSelectCircleSector(idx, "minor")
-                            }
-                          />
-                          <text
-                            x={xMin}
-                            y={yMin + 3}
-                            textAnchor="middle"
-                            fill="#cbd5e1"
-                            fontSize="9"
-                            className="pointer-events-none"
-                          >
-                            {sec.minor}
-                          </text>
-                        </g>
-                      );
-                    })}
-                    <circle
-                      cx="120"
-                      cy="120"
-                      r="24"
-                      fill="#090d16"
-                      stroke="#f59e0b"
-                      strokeWidth="1"
-                    />
-                    <text
-                      x="120"
-                      y="123"
-                      textAnchor="middle"
-                      fill="#fde047"
-                      fontSize="9"
-                      fontWeight="bold"
-                    >
-                      КРУГ 5/4
-                    </text>
-                  </svg>
-                </div>
-
-                <div className="md:col-span-7 space-y-2.5">
-                  <div className="text-xs font-bold text-amber-300">
-                    🧭 Квинто-квартовый компас аккордов (Smart Chords)
-                  </div>
-                  <p className="text-[11px] text-slate-300 leading-relaxed">
-                    Золотой сектор — <strong className="text-amber-300">Тоника (I)</strong>, против часовой — <strong className="text-emerald-400">Субдоминанта (IV)</strong>, по часовой — <strong className="text-rose-400">Доминанта (V)</strong>, внутри — <strong className="text-purple-300">Параллельный минор (vi)</strong>.
-                  </p>
-                  <div className="grid grid-cols-4 gap-2">
-                    {barSlots.map((slot, bIdx) => (
-                      <button
-                        key={bIdx}
-                        type="button"
-                        onClick={() => setActiveBarIdx(bIdx)}
-                        className={`p-2 rounded-xl border text-center ${
-                          activeBarIdx === bIdx
-                            ? "border-amber-400 bg-amber-500/20 text-white"
-                            : "border-slate-800 bg-slate-900 text-slate-300"
-                        }`}
-                      >
-                        <div className="text-[10px] text-slate-400">
-                          Такт {bIdx + 1}
-                        </div>
-                        <div className="text-sm font-mono font-bold text-amber-300">
-                          {slot.label}
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                  <div className="flex flex-wrap gap-1.5 pt-1">
-                    {GUIDED_CIRCLE_PROGRESSIONS.map((prog) => (
-                      <button
-                        key={prog.id}
-                        type="button"
-                        onClick={() => {
-                          const next = prog.steps.map((s) => ({
-                            sectorIdx: s.sectorIdx,
-                            ring: s.ring,
-                            label:
-                              s.ring === "minor"
-                                ? CIRCLE_OF_FIFTHS_SECTORS[s.sectorIdx].minor
-                                : CIRCLE_OF_FIFTHS_SECTORS[s.sectorIdx].major,
-                          }));
-                          setBarSlots(next);
-                          const built = build16StepTracksFrom4Bars(
-                            next,
-                            drumTrack
-                          );
-                          setCelestaTrack(built.celesta);
-                          setHarpTrack(built.harp);
-                          setCelloTrack(built.cello);
-                          setFluteTrack(built.flute);
-                          musicBoxSynth.playMelody(
-                            tempoBpm,
-                            built.celesta,
-                            built.harp,
-                            built.cello,
-                            built.flute,
-                            drumTrack
-                          );
-                        }}
-                        className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] text-amber-200 border border-amber-400/25"
-                      >
-                        {prog.title}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-
-              {/* Переключатель 5 дорожек оркестра и барабанов */}
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex flex-wrap gap-1.5">
-                  {ORCHESTRA_INSTRUMENTS.map((inst) => (
-                    <button
-                      key={inst.id}
-                      type="button"
-                      onClick={() => setActiveInstrument(inst.id)}
-                      className={`px-3 py-1.5 rounded-xl text-xs font-bold transition whitespace-nowrap ${
-                        activeInstrument === inst.id
-                          ? inst.colorClass
-                          : "bg-slate-800 text-slate-300 hover:bg-slate-700"
-                      }`}
-                    >
-                      {inst.title}
-                    </button>
-                  ))}
-                </div>
-                <button
-                  type="button"
-                  onClick={() =>
-                    musicBoxSynth.toggleMelody(
-                      "workshop-preview",
-                      tempoBpm,
-                      celestaTrack,
-                      harpTrack,
-                      celloTrack,
-                      fluteTrack,
-                      drumTrack
-                    )
-                  }
-                  className="px-4 py-1.5 rounded-xl bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-bold text-xs whitespace-nowrap"
-                >
-                  ▶ Прослушать 5 дорожек
-                </button>
-              </div>
-
-              {activeInstrument === "drums" && (
-                <div className="flex flex-wrap items-center gap-1.5 text-xs">
-                  <span className="text-slate-400">Ритмы барабанов:</span>
-                  {DRUM_GROOVE_PRESETS.map((gr) => (
-                    <button
-                      key={gr.id}
-                      type="button"
-                      onClick={() => {
-                        setDrumTrack([...gr.pattern]);
-                        musicBoxSynth.playMelody(
-                          tempoBpm,
-                          celestaTrack,
-                          harpTrack,
-                          celloTrack,
-                          fluteTrack,
-                          gr.pattern
-                        );
-                      }}
-                      className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-purple-200 border border-purple-400/30 whitespace-nowrap"
-                    >
-                      {gr.title}
-                    </button>
-                  ))}
-                </div>
-              )}
-
-              {/* 16-шаговая сетка секвенсора */}
-              <div className="overflow-x-auto bg-slate-950 border border-slate-800 rounded-2xl p-2.5">
-                <div className="min-w-[540px] space-y-1">
-                  {(activeInstrument === "drums"
-                    ? DRUM_INSTRUMENTS
-                    : NOTE_META.slice(0, 12)
-                  ).map((row) => (
-                    <div
-                      key={row.index}
-                      className="grid grid-cols-[90px_repeat(16,minmax(0,1fr))] gap-1 items-center"
-                    >
-                      <div className="text-[10px] font-mono text-slate-400 truncate text-right pr-1.5">
-                        {row.label}
-                      </div>
-                      {Array.from({ length: 16 }).map((_, sIdx) => {
-                        const isSelected = activeTrackArr[sIdx] === row.index;
-                        return (
-                          <button
-                            key={sIdx}
-                            type="button"
-                            onClick={() => setActiveTrackStep(sIdx, row.index)}
-                            className={`h-5 rounded border transition ${
-                              isSelected
-                                ? "bg-amber-400 border-amber-200"
-                                : sIdx % 4 === 0
-                                ? "bg-slate-900 border-slate-700"
-                                : "bg-slate-900/50 border-slate-800"
-                            }`}
-                          />
-                        );
-                      })}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
+            <MelodyStudio
+              tracks={{ celesta: celestaTrack, harp: harpTrack, cello: celloTrack, flute: fluteTrack, drums: drumTrack }}
+              setTrack={setTrack}
+              tempo={tempoBpm}
+              setTempo={setTempoBpm}
+              scaleId={scaleId}
+              onScaleChange={handleScaleChange}
+              onCompose={handleAiGenerateSymphony}
+              autoplayTick={autoplayTick}
+              harmonyPanel={harmonyPanel}
+            />
           )}
 
           {stepTab === 2 && (
-            <div className="space-y-3">
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <div>
-                  <label className="text-xs text-slate-400 block mb-1">
-                    Название шара (на бирке):
-                  </label>
-                  <input
-                    type="text"
-                    value={teaserTag}
-                    onChange={(e) => setTeaserTag(e.target.value)}
-                    className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-xs text-white"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs text-slate-400 block mb-1">
-                    Ваше имя или никнейм:
-                  </label>
-                  <input
-                    type="text"
-                    value={authorName}
-                    onChange={(e) => setAuthorName(e.target.value)}
-                    className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-xs text-white"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs text-slate-400 block mb-1">
-                    Ваш город:
-                  </label>
-                  <input
-                    type="text"
-                    value={city}
-                    onChange={(e) => setCity(e.target.value)}
-                    className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-xs text-white"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs text-slate-400 block mb-1">
-                    Контакт для обмена (только по двойному согласию):
-                  </label>
-                  <input
-                    type="text"
-                    value={contactHandle}
-                    onChange={(e) => setContactHandle(e.target.value)}
-                    placeholder="@nickname, телефон или e-mail"
-                    maxLength={120}
-                    autoComplete="off"
-                    className={`w-full px-3 py-2 rounded-xl bg-slate-950 border text-xs text-white ${
-                      contactIsValid ? "border-slate-700" : "border-amber-500/70"
-                    }`}
-                  />
-                  {!contactIsValid && (
-                    <p className="mt-1 text-[11px] text-amber-300/90">
-                      Укажите контакт — без него партнёр по Кольцу не сможет с вами связаться.
-                    </p>
-                  )}
-                </div>
-              </div>
-
+            <div className="space-y-3 max-w-2xl mx-auto">
+              <input
+                type="text"
+                value={teaserTag}
+                onChange={(e) => setTeaserTag(e.target.value)}
+                placeholder="Название шара"
+                aria-label="Название шара"
+                className={field + " font-serif text-base"}
+              />
               <div>
-                <label className="text-xs text-slate-400 block mb-1">
-                  Тайное пожелание внутри свитка (откроется получателю в Новогоднюю ночь):
-                </label>
                 <textarea
                   rows={4}
                   value={secretWish}
                   onChange={(e) => setSecretWish(e.target.value)}
-                  className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-xs text-white"
+                  placeholder="Пожелание получателю"
+                  aria-label="Пожелание"
+                  className={field + " resize-none"}
                 />
+                <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                  <span className="text-[11px] text-slate-500">Откроется в новогоднюю ночь. Идея:</span>
+                  {WISH_INSPIRATION_PROMPTS.map((w) => (
+                    <button key={w.label} type="button" onClick={() => setSecretWish(w.text)} className={chipCls + " py-1"}>
+                      {w.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <input
+                  type="text"
+                  value={authorName}
+                  onChange={(e) => setAuthorName(e.target.value)}
+                  placeholder="Имя"
+                  aria-label="Имя"
+                  className={field}
+                />
+                <input
+                  type="text"
+                  value={city}
+                  onChange={(e) => setCity(e.target.value)}
+                  placeholder="Город"
+                  aria-label="Город"
+                  className={field}
+                />
+              </div>
+              <div>
+                <input
+                  type="text"
+                  value={contactHandle}
+                  onChange={(e) => setContactHandle(e.target.value)}
+                  placeholder="Контакт: @ник, телефон или e-mail"
+                  aria-label="Контакт"
+                  maxLength={120}
+                  autoComplete="off"
+                  className={field + (contactIsValid ? "" : " border-amber-400/60")}
+                />
+                <div className="mt-1 text-[11px] text-slate-500">
+                  🔒 Увидит только ваш партнёр по обмену — и только если вы оба согласитесь.
+                </div>
               </div>
 
               {!textSafety.isSafe && (
-                <div className="p-3 rounded-xl bg-rose-950/80 border border-rose-400/50 text-xs text-rose-200">
-                  ⚠️ Поле «{textSafety.field}» отклонено фильтром безопасности:{" "}
-                  {textSafety.reason}
+                <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-400/40 text-xs text-rose-200">
+                  ⚠️ «{textSafety.field}»: {textSafety.reason}
                 </div>
               )}
-
               {submitError && (
-                <div role="alert" className="p-3 rounded-xl bg-rose-950/80 border border-rose-400/50 text-xs text-rose-200">
+                <div role="alert" className="p-3 rounded-xl bg-rose-500/10 border border-rose-400/40 text-xs text-rose-200">
                   ⚠️ {submitError}
                 </div>
               )}
@@ -3060,41 +3169,46 @@ function GiftWorkshopModal({ isOpen, onClose, onGiftCreated, remainingGifts = nu
           )}
         </div>
 
-        {/* Нижняя панель */}
-        <div className="px-4 py-3 bg-slate-950 border-t border-slate-800 flex items-center justify-between gap-2">
-          <div className="text-xs text-slate-400">
-            Эшелон вашего дара:{" "}
-            <span className="text-amber-300 font-bold">
-              {liveScore.echelon.label}
-            </span>
-            {limitReached && (
-              <span className="block mt-0.5 text-[11px] text-rose-300">
-                На Ёлке уже {maxGifts} ваших шара — это максимум для одного мастера.
-              </span>
-            )}
-            {!limitReached && remainingGifts != null && (
-              <span className="block mt-0.5 text-[11px] text-slate-400">
-                Можно повесить ещё: {remainingGifts} из {maxGifts}
-              </span>
-            )}
-            {!contactIsValid && (
-              <button
-                type="button"
-                onClick={() => setStepTab(2)}
-                className="block mt-0.5 text-[11px] text-amber-300/90 underline underline-offset-2"
-              >
-                Добавьте контакт на шаге «Свиток Души»
-              </button>
-            )}
+        {/* Низ: назад / далее / повесить */}
+        <div className="px-4 sm:px-5 py-3 border-t border-white/10 flex items-center gap-2">
+          {stepTab > 0 ? (
+            <button
+              type="button"
+              onClick={() => setStepTab((v) => v - 1)}
+              className="px-4 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 text-sm text-slate-200"
+            >
+              ← Назад
+            </button>
+          ) : (
+            <span />
+          )}
+          <div className="flex-1 min-w-0 text-[11px] text-slate-400 truncate text-center">
+            {limitReached
+              ? `У вас уже ${maxGifts} шара — это максимум`
+              : isLast && !contactIsValid
+              ? "Добавьте контакт для обмена"
+              : remainingGifts != null
+              ? `Ещё ${remainingGifts} из ${maxGifts} шаров`
+              : ""}
           </div>
-          <button
-            type="button"
-            disabled={!canSubmit}
-            onClick={handleSubmit}
-            className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-amber-400 to-yellow-500 disabled:opacity-40 text-slate-950 font-bold text-xs sm:text-sm shadow-lg"
-          >
-            {isSubmitting ? "Вешаем шар…" : "🎄 Повесить хрустальный шар на Всемирную ёлку"}
-          </button>
+          {isLast ? (
+            <button
+              type="button"
+              disabled={!canSubmit}
+              onClick={handleSubmit}
+              className="px-5 py-2.5 rounded-xl bg-amber-300 hover:bg-amber-200 disabled:opacity-40 text-slate-950 font-semibold text-sm"
+            >
+              {isSubmitting ? "Вешаем…" : "🎄 Повесить на Ёлку"}
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setStepTab((v) => v + 1)}
+              className="px-5 py-2.5 rounded-xl bg-amber-300 hover:bg-amber-200 text-slate-950 font-semibold text-sm"
+            >
+              Далее →
+            </button>
+          )}
         </div>
       </div>
     </div>
