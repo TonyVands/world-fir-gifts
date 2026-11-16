@@ -209,6 +209,29 @@ class CreatedGiftDTO(PublicShowcaseGiftDTO):
     my_user_id: str
 
 
+class CandleStatusDTO(BaseModel):
+    day: str
+    daily_limit: int
+    remaining_today: int
+    lit_today: list[str] = Field(default_factory=list)
+    resets_at: datetime
+
+
+class LeaderEntryDTO(BaseModel):
+    gift_id: str
+    candles: int
+    teaser_tag: str
+    author_display_name: str
+    city: str
+
+
+class LeaderboardDTO(BaseModel):
+    day: str
+    today: list[LeaderEntryDTO] = Field(default_factory=list)
+    yesterday_winner: LeaderEntryDTO | None = None
+    resets_at: datetime
+
+
 class UserProfileDTO(BaseModel):
     user_id: str | None
     display_name: str | None = None

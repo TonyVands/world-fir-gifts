@@ -35,6 +35,22 @@ SECURITY_CSP = _env_bool("SECURITY_CSP", True)
 
 # Лимиты (в минуту/час — см. app/core/ratelimit.py)
 MAX_GIFTS_PER_USER = _env_int("MAX_GIFTS_PER_USER", 3)
+# Свечи: каждый день у сессии DAILY_CANDLES огоньков, у одного шара — не больше
+# одной свечи в день. День считается по Москве (UTC+3, без перехода на летнее).
+DAILY_CANDLES = max(1, _env_int("DAILY_CANDLES", 3))
+CANDLE_DAY_TZ = timezone(timedelta(hours=_env_int("CANDLE_DAY_UTC_OFFSET_H", 3)))
+
+
+def candle_day(now: datetime | None = None) -> str:
+    """Текущие «свечные сутки» в виде YYYY-MM-DD."""
+    return (now or datetime.now(timezone.utc)).astimezone(CANDLE_DAY_TZ).date().isoformat()
+
+
+def candle_day_resets_at(now: datetime | None = None) -> datetime:
+    """Момент (UTC), когда свечи пополнятся."""
+    local = (now or datetime.now(timezone.utc)).astimezone(CANDLE_DAY_TZ)
+    midnight = (local + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    return midnight.astimezone(timezone.utc)
 REPORT_QUARANTINE_THRESHOLD = _env_int("REPORT_QUARANTINE_THRESHOLD", 5)
 WS_MAX_CONNECTIONS = _env_int("WS_MAX_CONNECTIONS", 5000)
 

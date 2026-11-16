@@ -16,6 +16,8 @@ import { inspectContentSafety, normalizeForModeration } from "./lib/moderation.j
 import {
   connectTreeEvents,
   createGift as apiCreateGift,
+  fetchCandleLeaders as apiFetchCandleLeaders,
+  fetchCandleStatus as apiFetchCandleStatus,
   fetchGifts as apiFetchGifts,
   fetchMyProfile as apiFetchMyProfile,
   fetchMyRing as apiFetchMyRing,
@@ -49,11 +51,11 @@ const GIFT_ORB_SCALE = 1.65;
 const ZOOM_MIN = 0.5;
 const ZOOM_MAX = 1.3;
 const WELCOME_SEEN_KEY = "wfg_welcome_seen_v1";
-// Новый облик Ёлки (реалистичная процедурная ель + киношная атмосфера).
-// Пока включается ссылкой ?look=new, текущий вид остаётся по умолчанию.
+// Облик Ёлки: реалистичная процедурная ель + киношная атмосфера (v16.4 —
+// по умолчанию). Прежний «конусный» вид остаётся по ссылке ?look=classic.
 const LOOK_NEW =
   typeof window !== "undefined" &&
-  new URLSearchParams(window.location.search).get("look") === "new";
+  new URLSearchParams(window.location.search).get("look") !== "classic";
 const UNLOCK_TARGET_MS = new Date("2026-12-31T23:59:59Z").getTime();
 
 // ============================================================================
@@ -1306,6 +1308,26 @@ export function computeFibonacciSpiralSlot(sequenceNumber) {
     branch_angle_rad: Number(branchAngleRad.toFixed(6)),
     radius_offset: radiusOffset,
     y_height: yHeight,
+  };
+}
+
+// Раскладка шаров для нового облика: верхний шар висит ниже звезды и макушки,
+// нижний — над снежной «юбкой». Шаг подстраивается под число шаров, поэтому
+// ни 10, ни 500 подарков не уходят ни в звезду, ни под снег.
+const DISPLAY_TOP_Y = 4.6; // y_height верхнего шара (мир: 60 - 4.6 = 55.4)
+const DISPLAY_BOTTOM_Y = 58.2; // y_height нижнего шара (мир ≈ 1.8)
+const DISPLAY_MAX_STEP = 1.15;
+export function computeDisplaySlot(sequenceNumber, total) {
+  const base = computeFibonacciSpiralSlot(sequenceNumber);
+  const span = DISPLAY_BOTTOM_Y - DISPLAY_TOP_Y;
+  const step = total > 1 ? Math.min(DISPLAY_MAX_STEP, span / (total - 1)) : 0;
+  const yHeight = DISPLAY_TOP_Y + sequenceNumber * step;
+  const foliageEdge = getConeEnvelopeRadius(yHeight + 1.2) * 0.88;
+  const tierWave = 0.24 * Math.sin(sequenceNumber * 0.7);
+  return {
+    ...base,
+    radius_offset: Number((foliageEdge + 3.3 + tierWave).toFixed(4)),
+    y_height: Number(yHeight.toFixed(4)),
   };
 }
 
@@ -3450,7 +3472,7 @@ const WELCOME_STEPS = [
   {
     icon: "🕯",
     title: "Повесьте шар и зажигайте свечи",
-    text: "Каждая свеча от другого гостя поднимает шар выше по Ёлке. Свою свечу зажечь нельзя — но можно порадовать чужие шары.",
+    text: "Каждый день у вас 3 свечи — по одной на шар. Свеча поднимает шар выше по Ёлке, а шар, собравший больше всех свечей за сутки, становится «Шаром дня». Свечи пополняются в полночь по Москве.",
   },
   {
     icon: "🦉",
@@ -3509,7 +3531,7 @@ function WelcomeGuideModal({ isOpen, onClose, onStart, maxGifts = 3 }) {
             пальцами (или Ctrl + колесо) — приблизить, тап по шару — послушать его мелодию.
           </div>
           <div>
-            🤝 <strong>Правила тепла:</strong> до {maxGifts} шаров на мастера, одна свеча от гостя на шар,
+            🤝 <strong>Правила тепла:</strong> до {maxGifts} шаров на мастера, 3 свечи в день (одна на шар),
             без грубостей, рекламы и ссылок — фильтр это проверит.
           </div>
         </div>
@@ -3589,6 +3611,73 @@ function MenuSection({ title, children }) {
   );
 }
 
+function formatResetTime(iso) {
+  const t = Date.parse(iso || "");
+  if (Number.isNaN(t)) return "00:00 МСК";
+  const ms = t - Date.now();
+  if (ms <= 0) return "вот-вот";
+  const h = Math.floor(ms / 3600000);
+  const m = Math.floor((ms % 3600000) / 60000);
+  return h > 0 ? `через ${h} ч ${m} мин` : `через ${m} мин`;
+}
+
+function CandleDaySection({ quota, leaders, onShowGift }) {
+  const limit = quota?.limit || 3;
+  const remaining = quota?.remaining ?? limit;
+  const winner = leaders?.yesterday_winner;
+  const today = leaders?.today || [];
+  return (
+    <div className="space-y-2.5">
+      <div className="rounded-2xl bg-white/5 border border-white/10 p-3">
+        <div className="flex items-center justify-between">
+          <div className="text-sm text-slate-200">Ваши свечи на сегодня</div>
+          <div className="text-base tracking-wide" aria-label={`Осталось ${remaining} из ${limit}`}>
+            {Array.from({ length: limit }).map((_, i) => (
+              <span key={i} className={i < remaining ? "" : "opacity-25 grayscale"}>🕯</span>
+            ))}
+          </div>
+        </div>
+        <div className="mt-1 text-[11px] text-slate-400 leading-snug">
+          Каждый день — {limit} свечи, одна на шар. Пополнятся {formatResetTime(quota?.resetsAt)}.
+          Шар, собравший больше всех свечей за сутки, становится «Шаром дня».
+        </div>
+      </div>
+      {winner && (
+        <button
+          type="button"
+          onClick={() => onShowGift(winner.gift_id)}
+          className="w-full text-left rounded-2xl bg-amber-300/10 border border-amber-300/30 p-3 hover:bg-amber-300/15"
+        >
+          <div className="text-[11px] uppercase tracking-[0.12em] text-amber-200/80">👑 Шар дня (итог вчера)</div>
+          <div className="font-serif text-amber-50 truncate">«{winner.teaser_tag}»</div>
+          <div className="text-[11px] text-slate-400 truncate">
+            {winner.author_display_name} · {winner.city} · 🕯 {winner.candles} за сутки
+          </div>
+        </button>
+      )}
+      <div className="space-y-1">
+        <div className="text-[11px] text-slate-400">Гонка сегодня</div>
+        {today.length === 0 ? (
+          <div className="text-xs text-slate-500">Сегодня ещё никто не зажигал свечей — ваша может решить всё.</div>
+        ) : (
+          today.map((e, i) => (
+            <button
+              key={e.gift_id}
+              type="button"
+              onClick={() => onShowGift(e.gift_id)}
+              className="w-full flex items-center gap-2 rounded-xl px-2.5 py-1.5 bg-white/5 hover:bg-white/10 text-left"
+            >
+              <span className="w-5 text-xs text-amber-200">{i === 0 ? "★" : i + 1}</span>
+              <span className="flex-1 min-w-0 truncate text-xs text-slate-200">«{e.teaser_tag}»</span>
+              <span className="text-xs text-slate-400">🕯 {e.candles}</span>
+            </button>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
 function NewLookMenu({
   isOpen,
   onClose,
@@ -3602,6 +3691,9 @@ function NewLookMenu({
   onToggleHearth,
   onOpenRing,
   onOpenGuide,
+  candleQuota,
+  candleLeaders,
+  onShowGift,
 }) {
   if (!isOpen) return null;
   const chip = (active) =>
@@ -3627,6 +3719,10 @@ function NewLookMenu({
             ✕
           </button>
         </div>
+
+        <MenuSection title="Свечи дня">
+          <CandleDaySection quota={candleQuota} leaders={candleLeaders} onShowGift={onShowGift} />
+        </MenuSection>
 
         <MenuSection title="Время суток">
           <div className="grid grid-cols-4 gap-1.5">
@@ -3682,7 +3778,7 @@ function NewLookMenu({
             <button type="button" onClick={onOpenGuide} className={chip(false)}>
               Как это работает
             </button>
-            <a href="/" className={`${chip(false)} text-center`}>
+            <a href="/?look=classic" className={`${chip(false)} text-center`}>
               Прежний облик
             </a>
           </div>
@@ -3700,11 +3796,15 @@ function CompactGiftCard({
   isOwn,
   isLit,
   isReported,
+  candlesLeft,
+  badge,
   onPlay,
   onToggleLoop,
   onCandle,
-  onPrev,
-  onNext,
+  rank,
+  total,
+  onRankDown,
+  onRankUp,
   onClose,
   onInspect,
   onNft,
@@ -3723,11 +3823,28 @@ function CompactGiftCard({
           <div className="text-[12px] text-slate-400 truncate">
             {gift.card_preview.author_display_name} · {gift.card_preview.city} · 🕯 {gift.candles_count}
           </div>
+          {total > 0 && (
+            <div className="text-[11px] text-amber-200/70">
+              #{rank} из {total} в рейтинге{badge ? ` · ${badge}` : ""}
+            </div>
+          )}
         </div>
-        <button type="button" onClick={onPrev} aria-label="Предыдущий шар" className={iconBtn}>
+        <button
+          type="button"
+          onClick={onRankDown}
+          aria-label="Ниже в рейтинге"
+          title="Ниже в рейтинге"
+          className={iconBtn}
+        >
           ‹
         </button>
-        <button type="button" onClick={onNext} aria-label="Следующий шар" className={iconBtn}>
+        <button
+          type="button"
+          onClick={onRankUp}
+          aria-label="Выше в рейтинге"
+          title="Выше в рейтинге"
+          className={iconBtn}
+        >
           ›
         </button>
         <button type="button" onClick={onClose} aria-label="Закрыть" className={iconBtn}>
@@ -3757,10 +3874,18 @@ function CompactGiftCard({
         <button
           type="button"
           onClick={onCandle}
-          disabled={isOwn || isLit}
+          disabled={isOwn || isLit || candlesLeft === 0}
           className="flex-1 py-2.5 rounded-xl bg-amber-300 hover:bg-amber-200 disabled:bg-amber-300/30 disabled:text-amber-100 text-slate-950 text-sm font-semibold"
         >
-          {isOwn ? "Ваш шар" : isLit ? "Свеча горит" : "Зажечь свечу"}
+          {isOwn
+            ? "Ваш шар"
+            : isLit
+            ? "Свеча горит сегодня"
+            : candlesLeft === 0
+            ? "Свечи до полуночи"
+            : candlesLeft != null
+            ? `Зажечь свечу · ${candlesLeft}`
+            : "Зажечь свечу"}
         </button>
         <button
           type="button"
@@ -3861,6 +3986,9 @@ export default function App() {
   const [totalLoaded, setTotalLoaded] = useState(0);
   const [totalVoxelsOnTree, setTotalVoxelsOnTree] = useState(0);
   const [litGiftIds, setLitGiftIds] = useState(() => loadLitGiftIds());
+  // Свечи дня: запас на сутки (пополняется в полночь по Москве) и лидеры дня.
+  const [candleQuota, setCandleQuota] = useState({ limit: 3, remaining: null, resetsAt: null });
+  const [candleLeaders, setCandleLeaders] = useState({ today: [], yesterday_winner: null });
   const [audioPlaybackState, setAudioPlaybackState] = useState({
     playingId: null,
     step: null,
@@ -4114,6 +4242,15 @@ export default function App() {
   }, [serverUnlockAtMs, clockOffsetMs]);
 
   const syncInstancedMeshes = useCallback(() => {
+    if (LOOK_NEW) {
+      // Координаты меняем на месте: копии подарков в состоянии React делят
+      // с картой один объект coordinates и сразу видят новую раскладку.
+      const total = giftsMapRef.current.size;
+      giftsMapRef.current.forEach((gift, seq) => {
+        if (!gift?.coordinates) return;
+        Object.assign(gift.coordinates, computeDisplaySlot(seq, total));
+      });
+    }
     const glassGlobeMesh = glassGlobeMeshRef.current;
     const pedestalMesh = pedestalBaseMeshRef.current;
     const rimMesh = pedestalRimMeshRef.current;
@@ -5476,7 +5613,7 @@ export default function App() {
     };
 
     // ======================================================================
-    // НОВЫЙ ОБЛИК (?look=new): реалистичная ель, HDR-свет, туман, DOF
+    // НОВЫЙ ОБЛИК (по умолчанию; ?look=classic — прежний): реалистичная ель, HDR-свет, туман, DOF
     // ======================================================================
     let fir = null;
     let clearing = null;
@@ -5576,6 +5713,8 @@ export default function App() {
         })
       );
       topStarGroup.add(newStar);
+      // звезда садится прямо на верхушку-«лидер», без зазора над стволом
+      topStarGroup.position.y = 59.9;
 
       // киношная глубина резкости: ель в фокусе, верх и низ кадра мягко размыты
       const hBlur = new ShaderPass(HorizontalTiltShiftShader);
@@ -5634,7 +5773,8 @@ export default function App() {
         0,
         Math.min(MAX_SCROLL_DEPTH, scrollTargetRef.current + dy * 0.05)
       );
-      manualAzimuthOffset += dx * 0.006;
+      // без инверсии: тянем вправо — ель поворачивается вправо
+      manualAzimuthOffset -= dx * 0.006;
     };
     const onMouseUp = () => {
       isDragging = false;
@@ -5679,7 +5819,7 @@ export default function App() {
         0,
         Math.min(MAX_SCROLL_DEPTH, scrollTargetRef.current + dy * 0.065)
       );
-      manualAzimuthOffset += dx * 0.008;
+      manualAzimuthOffset -= dx * 0.008;
     };
     const onTouchEnd = (e) => {
       if (isPinching && (!e?.touches || e.touches.length < 2)) {
@@ -6061,11 +6201,60 @@ export default function App() {
     return focusedGiftUpdated;
   }, []);
 
+  const refreshCandles = useCallback(async () => {
+    const [st, lead] = await Promise.allSettled([apiFetchCandleStatus(), apiFetchCandleLeaders()]);
+    if (st.status === "fulfilled" && st.value) {
+      const v = st.value;
+      setCandleQuota({ limit: v.daily_limit, remaining: v.remaining_today, resetsAt: v.resets_at });
+      const ids = new Set(v.lit_today || []);
+      setLitGiftIds(ids);
+      saveLitGiftIds(ids);
+    }
+    if (lead.status === "fulfilled" && lead.value) {
+      setCandleLeaders({
+        today: lead.value.today || [],
+        yesterday_winner: lead.value.yesterday_winner || null,
+      });
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshCandles();
+  }, [refreshCandles]);
+
+  // В полночь по Москве свечи пополняются — подтягиваем новый запас и лидеров.
+  useEffect(() => {
+    if (!candleQuota.resetsAt) return undefined;
+    const ms = Date.parse(candleQuota.resetsAt) - (Date.now() + clockOffsetMs);
+    if (!Number.isFinite(ms)) return undefined;
+    const t = setTimeout(refreshCandles, Math.max(1000, Math.min(ms + 1500, 2 ** 31 - 1)));
+    return () => clearTimeout(t);
+  }, [candleQuota.resetsAt, clockOffsetMs, refreshCandles]);
+
+  const focusGiftById = (giftId) => {
+    for (const g of giftsMapRef.current.values()) {
+      if (g.id === giftId) {
+        setSelectedGift({ ...g });
+        setIsMenuOpen(false);
+        return true;
+      }
+    }
+    showToast("Этот шар сейчас не на Ёлке.", "info");
+    return false;
+  };
+
   const handleLightCandle = () => {
     if (!selectedGift || litGiftIds.has(selectedGift.id)) return;
     if (myGiftIds.has(selectedGift.id)) {
       showToast("Это ваш шар 🙂 Свечи у него зажигают другие мастера.", "info");
       return;
+    }
+    if (!selectedGift.offline && candleQuota.remaining === 0) {
+      showToast("Свечи на сегодня закончились 🕯 Новые появятся в полночь по Москве.", "info");
+      return;
+    }
+    if (!selectedGift.offline && candleQuota.remaining != null) {
+      setCandleQuota((q) => ({ ...q, remaining: Math.max(0, (q.remaining ?? 1) - 1) }));
     }
     const seq = selectedGift.coordinates.sequence_number;
     const nodeInMap = giftsMapRef.current.get(seq);
@@ -6097,6 +6286,7 @@ export default function App() {
             );
           }
           showToast("🕯 Свеча зажжена — шар поднялся выше на Ёлке!", "success");
+          refreshCandles();
         })
         .catch((err) => {
           // Сервер свечу не засчитал — откатываем оптимистичный +1 и честно говорим почему.
@@ -6109,14 +6299,15 @@ export default function App() {
             setMyGiftIds((prev) => new Set(prev).add(litId));
             showToast("Это ваш шар 🙂 Свечи у него зажигают другие мастера.", "info");
           } else if (err?.status === 409) {
-            showToast("Вы уже зажигали свечу у этого шара — одна свеча от каждого гостя.", "info");
+            showToast("Сегодня вы уже зажгли свечу у этого шара. Завтра — снова можно.", "info");
           } else if (err?.status === 429) {
             markLit(false);
-            showToast("Слишком много свечей подряд. Передохните минутку ✨", "warn");
+            showToast(err.message || "Свечи на сегодня закончились. Новые — после полуночи.", "warn");
           } else {
             markLit(false);
             showToast("Нет связи с Ёлкой — свеча не засчитана. Попробуйте ещё раз.", "warn");
           }
+          refreshCandles();
         });
     }
 
@@ -6245,12 +6436,17 @@ export default function App() {
     );
   };
 
+  // Место 0 — лидер. delta=-1: выше по рейтингу (кнопка ›), +1: ниже (‹).
   const handleStepNeighborGift = (delta) => {
     if (!selectedGift) return;
     const total = giftsMapRef.current.size;
     if (total === 0) return;
-    const nextSeq =
-      (selectedGift.coordinates.sequence_number + delta + total) % total;
+    const curSeq = selectedGift.coordinates.sequence_number;
+    let nextSeq = (curSeq + delta + total) % total;
+    if (LOOK_NEW && (curSeq + delta < 0 || curSeq + delta >= total)) {
+      showToast(delta < 0 ? "Это лидер рейтинга 👑" : "Это последний шар в рейтинге", "info");
+      return;
+    }
     const nextGift = giftsMapRef.current.get(nextSeq);
     if (nextGift) {
       setSelectedGift({ ...nextGift });
@@ -6347,6 +6543,9 @@ export default function App() {
           setIsMenuOpen(false);
           setIsRingModalOpen(true);
         }}
+        candleQuota={candleQuota}
+        candleLeaders={candleLeaders}
+        onShowGift={focusGiftById}
         onOpenGuide={() => {
           setIsMenuOpen(false);
           setIsWelcomeOpen(true);
@@ -6594,6 +6793,14 @@ export default function App() {
           isOwn={myGiftIds.has(selectedGift.id)}
           isLit={litGiftIds.has(selectedGift.id)}
           isReported={reportedGiftIds.has(selectedGift.id)}
+          candlesLeft={selectedGift.offline ? null : candleQuota.remaining}
+          badge={
+            candleLeaders.yesterday_winner?.gift_id === selectedGift.id
+              ? "👑 Шар дня"
+              : candleLeaders.today[0]?.gift_id === selectedGift.id
+              ? "★ лидер дня"
+              : ""
+          }
           onPlay={() =>
             musicBoxSynth.toggleMelody(
               selectedGift.id,
@@ -6607,8 +6814,10 @@ export default function App() {
           }
           onToggleLoop={() => musicBoxSynth.setLooping(!audioPlaybackState.isLooping)}
           onCandle={handleLightCandle}
-          onPrev={() => handleStepNeighborGift(-1)}
-          onNext={() => handleStepNeighborGift(1)}
+          rank={selectedGift.coordinates.sequence_number + 1}
+          total={giftsMapRef.current.size}
+          onRankUp={() => handleStepNeighborGift(-1)}
+          onRankDown={() => handleStepNeighborGift(1)}
           onClose={() => {
             musicBoxSynth.stop();
             setSelectedGift(null);

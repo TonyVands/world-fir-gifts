@@ -67,6 +67,26 @@ class GiftCandle(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
+class CandleLight(Base):
+    """Свеча дня: одна сессия — одна свеча на шар в сутки, DAILY_CANDLES в сутки.
+
+    Старая таблица gift_candles («одна свеча навсегда») остаётся для истории.
+    """
+
+    __tablename__ = "candle_lights"
+    __table_args__ = (
+        UniqueConstraint("gift_id", "voter_hash", "day", name="uq_candle_lights_gift_voter_day"),
+        Index("ix_candle_lights_voter_day", "voter_hash", "day"),
+        Index("ix_candle_lights_day_gift", "day", "gift_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    gift_id: Mapped[str] = mapped_column(String(36), ForeignKey("gifts.id"))
+    voter_hash: Mapped[str] = mapped_column(String(128))
+    day: Mapped[str] = mapped_column(String(10))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
 class GiftReport(Base):
     """Жалоба на подарок. Одна сессия — одна жалоба на подарок."""
 

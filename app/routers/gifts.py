@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timedelta, timezone
 import hashlib
 import logging
 
@@ -9,16 +10,19 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import config, ratelimit
-from app.core.auth import find_user_by_hash, require_admin, require_session_hash
+from app.core.auth import find_user_by_hash, optional_session_hash, require_admin, require_session_hash
 from app.core.security import encrypt_contact
 from app.core.unlock import is_new_year_unlocked
 from app.database import get_db
-from app.models import Gift, GiftCandle, GiftReport, User
+from app.models import CandleLight, Gift, GiftReport, User
 from app.schemas import (
+    CandleStatusDTO,
     CreatedGiftDTO,
     GiftCreateRequest,
     GiftReportRequest,
     GiftReportResultDTO,
+    LeaderboardDTO,
+    LeaderEntryDTO,
     PublicShowcaseGiftDTO,
     normalize_contact,
     quality_tier_badge,
@@ -233,10 +237,81 @@ async def create_gift(
     return CreatedGiftDTO(**_to_dto_kwargs(gift, rank), my_user_id=user.id)
 
 
+async def _candle_status(session: AsyncSession, session_hash: str | None) -> CandleStatusDTO:
+    day = config.candle_day()
+    lit: list[str] = []
+    if session_hash:
+        rows = await session.execute(
+            select(CandleLight.gift_id).where(CandleLight.voter_hash == session_hash, CandleLight.day == day)
+        )
+        lit = [r[0] for r in rows.all()]
+    return CandleStatusDTO(
+        day=day,
+        daily_limit=config.DAILY_CANDLES,
+        remaining_today=max(0, config.DAILY_CANDLES - len(lit)),
+        lit_today=lit,
+        resets_at=config.candle_day_resets_at(),
+    )
+
+
+@router.get("/candles/status", response_model=CandleStatusDTO)
+async def candle_status(
+    response: Response,
+    session_hash: str | None = Depends(optional_session_hash),
+    session: AsyncSession = Depends(get_db),
+):
+    response.headers["Cache-Control"] = "no-store"
+    return await _candle_status(session, session_hash)
+
+
+async def _day_leaders(session: AsyncSession, day: str, limit: int) -> list[LeaderEntryDTO]:
+    cnt = func.count(CandleLight.id).label("cnt")
+    first_at = func.min(CandleLight.created_at).label("first_at")
+    stmt = (
+        select(Gift, cnt)
+        .join(CandleLight, CandleLight.gift_id == Gift.id)
+        .where(CandleLight.day == day, Gift.is_quarantined.is_(False))
+        .group_by(Gift.id)
+        # при равенстве побеждает тот, кто раньше набрал первую свечу
+        .order_by(cnt.desc(), first_at.asc())
+        .limit(limit)
+    )
+    out = []
+    for gift, n in (await session.execute(stmt)).all():
+        card = gift.card_preview or {}
+        out.append(
+            LeaderEntryDTO(
+                gift_id=gift.id,
+                candles=int(n),
+                teaser_tag=str(card.get("teaser_tag", "")),
+                author_display_name=str(card.get("author_display_name", "")),
+                city=str(card.get("city", "")),
+            )
+        )
+    return out
+
+
+@router.get("/leaders", response_model=LeaderboardDTO)
+async def candle_leaders(response: Response, session: AsyncSession = Depends(get_db)):
+    """Лидеры дня по свечам за текущие сутки и «Шар дня» — победитель вчерашних."""
+    response.headers["Cache-Control"] = "no-store"
+    today = config.candle_day()
+    yesterday = config.candle_day(datetime.now(timezone.utc) - timedelta(days=1))
+    top = await _day_leaders(session, today, 5)
+    prev = await _day_leaders(session, yesterday, 1)
+    return LeaderboardDTO(
+        day=today,
+        today=top,
+        yesterday_winner=prev[0] if prev else None,
+        resets_at=config.candle_day_resets_at(),
+    )
+
+
 @router.post("/{gift_id}/candle", response_model=PublicShowcaseGiftDTO)
 async def light_gift_candle(
     gift_id: str,
     request: Request,
+    response: Response,
     session_hash: str = Depends(require_session_hash),
     session: AsyncSession = Depends(get_db),
 ):
@@ -247,12 +322,33 @@ async def light_gift_candle(
     if author is not None and author.session_fingerprint == session_hash:
         raise HTTPException(status_code=403, detail="Свою свечу зажечь нельзя — пусть её зажгут другие.")
 
-    session.add(GiftCandle(gift_id=gift.id, voter_hash=session_hash))
+    day = config.candle_day()
+    used = (
+        await session.execute(
+            select(func.count(CandleLight.id)).where(CandleLight.voter_hash == session_hash, CandleLight.day == day)
+        )
+    ).scalar_one()
+    already = (
+        await session.execute(
+            select(CandleLight.id).where(
+                CandleLight.voter_hash == session_hash, CandleLight.day == day, CandleLight.gift_id == gift.id
+            )
+        )
+    ).first()
+    if already is not None:
+        raise HTTPException(status_code=409, detail="Сегодня вы уже зажгли свечу у этого шара. Завтра — снова можно.")
+    if used >= config.DAILY_CANDLES:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Свечи на сегодня закончились ({config.DAILY_CANDLES} из {config.DAILY_CANDLES}). Новые — после полуночи по Москве.",
+        )
+
+    session.add(CandleLight(gift_id=gift.id, voter_hash=session_hash, day=day))
     try:
         await session.flush()
     except IntegrityError:
         await session.rollback()
-        raise HTTPException(status_code=409, detail="Вы уже зажгли свечу у этого шара.")
+        raise HTTPException(status_code=409, detail="Сегодня вы уже зажгли свечу у этого шара. Завтра — снова можно.")
 
     # Атомарный инкремент — без гонок при одновременных свечах.
     await session.execute(
@@ -264,6 +360,7 @@ async def light_gift_candle(
     await session.refresh(gift)
     invalidate_showcase()
     rank = await _rank_of(session, gift)
+    response.headers["X-Candles-Remaining"] = str(max(0, config.DAILY_CANDLES - used - 1))
     return _to_dto(gift, rank)
 
 

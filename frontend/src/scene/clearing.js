@@ -7,13 +7,18 @@ import { SNOW_Y, layBranch, mulberry32 } from "./realisticFir.js";
 
 // Облегчённая ель для фона: меньше веток, крупные лапы (вдали детали не видны).
 function growBackgroundFir({ origin, height, rnd, push }) {
-  const whorls = Math.round(6 + height / 6);
+  const baseSize = 2.4 + height / 14;
+  // Верхние ярусы мельче и чаще: у настоящей ели макушка — узкий острый конус
+  const whorls = Math.round(7 + height / 5.5);
   for (let w = 0; w < whorls; w++) {
-    const t = w / whorls; // 0 — верх
-    const yl = height * (1 - t) - 0.6;
-    const R = height * 0.33 * Math.pow(t, 0.92) + 0.5;
-    const count = Math.max(3, Math.round(2 + R * 0.38));
-    const sizeMul = 2.4 + height / 14;
+    const tl = w / whorls; // 0 — верх
+    const t = Math.pow(tl, 1.12);
+    const yl = height * (1 - t) - 0.9;
+    const R = height * 0.33 * Math.pow(t, 0.92) + 0.45;
+    const count = Math.max(4, Math.round(2.5 + R * 0.42));
+    // размер «карточки» хвои соразмерен длине лапы — иначе макушка тонет в
+    // нескольких огромных пятнах и силуэт выглядит срезанным
+    const sizeMul = baseSize * (0.38 + 0.62 * Math.min(1, t * 2.6));
     for (let i = 0; i < count; i++) {
       const a = w * 2.39996 + (i / count) * Math.PI * 2 + (rnd() - 0.5) * 0.4;
       const L = R * (0.85 + rnd() * 0.2);
@@ -24,8 +29,23 @@ function growBackgroundFir({ origin, height, rnd, push }) {
         Math.max(SNOW_Y + 0.2, origin.y + yl - droop),
         origin.z + Math.sin(a) * L
       );
-      layBranch({ base, tip, rnd, density: 0.3, sizeMul, sOffset: 0.4, push: (p, d, s, b) => push(p, d, s, b, t) });
+      layBranch({
+        base, tip, rnd, density: t < 0.2 ? 0.45 : 0.3, sizeMul, sOffset: t < 0.2 ? 0.15 : 0.4,
+        push: (p, d, s, b) => push(p, d, s, b, t),
+      });
     }
+  }
+  // Верхушка-«лидер»: несколько побегов вверх вдоль ствола до самой вершины
+  const leaderN = 4;
+  for (let k = 0; k < leaderN; k++) {
+    const f = k / (leaderN - 1);
+    const p = new THREE.Vector3(
+      origin.x + (rnd() - 0.5) * 0.15,
+      origin.y + height * (0.9 + 0.08 * f) - 1.2,
+      origin.z + (rnd() - 0.5) * 0.15
+    );
+    const d = new THREE.Vector3((rnd() - 0.5) * 0.25, 1, (rnd() - 0.5) * 0.25).normalize();
+    push(p, d, baseSize * (0.55 - 0.18 * f), 1, 0);
   }
 }
 

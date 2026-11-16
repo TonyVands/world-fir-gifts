@@ -1,4 +1,9 @@
 {
-  "comment": "HDRI с Poly Haven (CC0), разрешение 1K. Положите файл <name>_1k.hdr в эту папку и добавьте его имя в files. Ночь: winter_evening, вечер: night_bridge, утро: winter_lake_01, день: snowy_park_01.",
-  "files": []
+  "comment": "Poly Haven CC0 HDRI, 1K; яркость приведена к процедурному небу своего времени суток. Только освещение и отражения, не фон.",
+  "files": [
+    "winter_evening_1k.hdr",
+    "night_bridge_1k.hdr",
+    "winter_lake_01_1k.hdr",
+    "snowy_park_01_1k.hdr"
+  ]
 }

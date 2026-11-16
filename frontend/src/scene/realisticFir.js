@@ -364,12 +364,13 @@ export function createRealisticFir({ isMobile = false } = {}) {
     addWhorl(y, { extraDroop: 0.8, lenMul: 1.04, countMul: 1.15 });
   }
   // верхушка-«лидер»
-  for (let i = 0; i < 6; i++) {
-    const t = i / 6;
+  // (побеги вдоль верхних ~2.5 единиц ствола, чтобы он не торчал голым под звездой)
+  for (let i = 0; i < 10; i++) {
+    const t = i / 10;
     pushSpray(
-      new THREE.Vector3(0, TREE_TOP_Y - 1.5 + t * 1.8, 0),
-      new THREE.Vector3((rnd() - 0.5) * 0.4, 1, (rnd() - 0.5) * 0.4).normalize(),
-      0.9 - t * 0.4,
+      new THREE.Vector3(0, TREE_TOP_Y - 2.4 + t * 2.4, 0),
+      new THREE.Vector3((rnd() - 0.5) * 0.7, 1, (rnd() - 0.5) * 0.7).normalize(),
+      1.25 - t * 0.6,
       0.85,
       false,
       0

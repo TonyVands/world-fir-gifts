@@ -89,6 +89,10 @@ export const createGift = (payload) => request("/gifts", { method: "POST", body:
 export const lightGiftCandle = (giftId) =>
   request(`/gifts/${encodeURIComponent(giftId)}/candle`, { method: "POST" });
 
+// Свечи дня: суточный запас огоньков и лидеры по свечам за сутки.
+export const fetchCandleStatus = () => request("/gifts/candles/status");
+export const fetchCandleLeaders = () => request("/gifts/leaders", { auth: false });
+
 export const reportGift = (giftId, reason = "other") =>
   request(`/gifts/${encodeURIComponent(giftId)}/report`, { method: "POST", body: { reason } });
 
@@ -194,13 +198,19 @@ export function giftNodeFromDTO(dto) {
   };
 }
 
-// Свечи, зажжённые в этом браузере (сервер всё равно не даст зажечь дважды).
-const LIT_KEY = "wfg_lit_candles";
+// Свечи, зажжённые в этом браузере СЕГОДНЯ (сутки по Москве). Источник
+// истины — сервер (/gifts/candles/status); здесь лишь кеш на случай офлайна.
+const LIT_KEY = "wfg_lit_candles_day";
+
+export function candleDayMoscow(nowMs = Date.now()) {
+  return new Date(nowMs + 3 * 3600 * 1000).toISOString().slice(0, 10);
+}
 
 export function loadLitGiftIds() {
   try {
-    const arr = JSON.parse(localStorage.getItem(LIT_KEY) || "[]");
-    return new Set(Array.isArray(arr) ? arr.slice(-2000) : []);
+    const obj = JSON.parse(localStorage.getItem(LIT_KEY) || "null");
+    if (!obj || obj.day !== candleDayMoscow() || !Array.isArray(obj.ids)) return new Set();
+    return new Set(obj.ids.slice(-500));
   } catch {
     return new Set();
   }
@@ -208,7 +218,7 @@ export function loadLitGiftIds() {
 
 export function saveLitGiftIds(set) {
   try {
-    localStorage.setItem(LIT_KEY, JSON.stringify([...set].slice(-2000)));
+    localStorage.setItem(LIT_KEY, JSON.stringify({ day: candleDayMoscow(), ids: [...set].slice(-500) }));
   } catch {
     /* хранилище недоступно */
   }
