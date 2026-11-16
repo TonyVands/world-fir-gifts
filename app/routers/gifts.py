@@ -38,6 +38,7 @@ from app.services.matching import (
     verify_deep_text_safety,
     verify_voxel_topology_safety,
 )
+from app.services import telegram
 from app.services.ring import is_ring_formed, join_ring_late
 
 logger = logging.getLogger("uvicorn.error")
@@ -485,6 +486,7 @@ async def light_gift_candle(
     invalidate_showcase()
     rank = await _rank_of(session, gift)
     response.headers["X-Candles-Remaining"] = str(max(0, config.DAILY_CANDLES - used - 1))
+    telegram.schedule(telegram.notify_candle(gift.id))
     return _to_dto(gift, rank)
 
 

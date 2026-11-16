@@ -10,14 +10,33 @@ import { VerticalTiltShiftShader } from "three/examples/jsm/shaders/VerticalTilt
 import { createRealisticFir, createCapLoopGeometry } from "./scene/realisticFir.js";
 import { createClearing } from "./scene/clearing.js";
 import { TIME_OF_DAY, WEATHER_PRESETS, createAtmosphereController } from "./scene/atmosphere.js";
+const WorldMapModal = React.lazy(() => import("./ui/WorldMapModal.jsx"));
+const MidnightShow = React.lazy(() => import("./ui/MidnightShow.jsx"));
 import { computeDeterministicGenomeHash } from "./lib/genome.js";
 import { inspectVoxelGeometrySafety } from "./lib/voxelSafety.js";
 import { inspectContentSafety, normalizeForModeration } from "./lib/moderation.js";
+import {
+  ADVENT_DAYS,
+  ADVENT_VOICES,
+  ADVENT_WEATHER,
+  adventStreak,
+  adventToday,
+  daysUntilAdvent,
+  loadOpened as loadAdventOpened,
+  saveOpened as saveAdventOpened,
+  unlockedItems as adventUnlockedItems,
+} from "./lib/advent.js";
 import {
   connectTreeEvents,
   createGift as apiCreateGift,
   fetchCandleLeaders as apiFetchCandleLeaders,
   fetchCandleStatus as apiFetchCandleStatus,
+  fetchAchievements as apiFetchAchievements,
+  fetchCityLeaders as apiFetchCityLeaders,
+  fetchWorldMap as apiFetchWorldMap,
+  fetchTelegramStatus as apiFetchTelegramStatus,
+  createTelegramLink as apiCreateTelegramLink,
+  deleteTelegramLink as apiDeleteTelegramLink,
   fetchGifts as apiFetchGifts,
   fetchMyGift as apiFetchMyGift,
   updateGift as apiUpdateGift,
@@ -887,11 +906,20 @@ export function computeAntiSybilScoreDetails({
 // (канонический sha256-хэш общим модулем: src/lib/genome.js — паритет с бэкендом)
 // ============================================================================
 
-// Ссылка «открыть этот шар на Ёлке»: /?gift=<id>
+// /g/<id> или /?gift=<id> — ссылка на конкретный шар
+function deepLinkGiftId() {
+  if (typeof window === "undefined") return null;
+  const m = window.location.pathname.match(/^\/g\/([0-9a-fA-F-]{8,40})\/?$/);
+  return m ? m[1] : new URLSearchParams(window.location.search).get("gift");
+}
+
+const INVITE_TEXT = "Я повесил шар на Всемирную ёлку — зажги свечу 🕯";
+
+// Ссылка «открыть этот шар на Ёлке»: /g/<id>
 function giftShareUrl(gift) {
   const origin =
     typeof window !== "undefined" && window.location?.origin ? window.location.origin : "https://world-fir-timyrabdrakhimov.waw0.amvera.tech";
-  return gift?.id && !gift.offline ? `${origin}/?gift=${encodeURIComponent(gift.id)}` : origin;
+  return gift?.id && !gift.offline ? `${origin}/g/${encodeURIComponent(gift.id)}` : origin;
 }
 
 function buildNftRelicMetadata(gift, recipientCity = null) {
@@ -1550,6 +1578,8 @@ function generateProceduralGifts(count = 144) {
 const EXTRA_TIMBRES = new Set([
   "piano", "musicbox", "bells", "glock", "epiano", "guitar",
   "strings", "pad", "violin", "bass", "clarinet", "choir",
+  // адвент-звуки
+  "organ", "xylophone", "marimba", "kalimba", "harpsichord", "sleighbells", "accordion",
 ]);
 
 class ChamberOrchestraSynth {
@@ -1917,6 +1947,99 @@ class ChamberOrchestraSynth {
         f1.connect(out);
         f2.connect(out);
         run(vs, env(out, 0.22, 0.18, duration * 1.6 + 0.35));
+        break;
+      }
+      case "organ": {
+        const parts = [
+          [1, 0.5],
+          [2, 0.35],
+          [3, 0.18],
+          [4, 0.12],
+        ].map(([m, g]) => {
+          const o = osc("sine", freq * m);
+          const gg = ctx.createGain();
+          gg.gain.value = g;
+          o.connect(gg).connect(out);
+          return o;
+        });
+        run(parts, env(out, 0.16, 0.04, duration * 1.5 + 0.12));
+        break;
+      }
+      case "xylophone":
+      case "marimba": {
+        const isX = timbre === "xylophone";
+        const f = isX ? freq * 2 : freq;
+        const a = osc("sine", f);
+        const b = osc("sine", f * (isX ? 3.93 : 4.0));
+        const bg = ctx.createGain();
+        bg.gain.setValueAtTime(isX ? 0.4 : 0.18, t);
+        bg.gain.exponentialRampToValueAtTime(0.001, t + (isX ? 0.08 : 0.15));
+        a.connect(out);
+        b.connect(bg).connect(out);
+        run([a, b], env(out, isX ? 0.2 : 0.26, 0.002, isX ? 0.35 : 0.65));
+        break;
+      }
+      case "kalimba": {
+        const a = osc("sine", freq * 2);
+        const b = osc("sine", freq * 2 * 5.4);
+        const bg = ctx.createGain();
+        bg.gain.setValueAtTime(0.3, t);
+        bg.gain.exponentialRampToValueAtTime(0.001, t + 0.05);
+        a.connect(out);
+        b.connect(bg).connect(out);
+        run([a, b], env(out, 0.2, 0.003, 1.1));
+        break;
+      }
+      case "harpsichord": {
+        const a = osc("sawtooth", freq);
+        const b = osc("square", freq * 2);
+        const bg = ctx.createGain();
+        bg.gain.value = 0.25;
+        const hp = ctx.createBiquadFilter();
+        hp.type = "highpass";
+        hp.frequency.value = freq * 0.8;
+        a.connect(hp);
+        b.connect(bg).connect(hp);
+        hp.connect(out);
+        run([a, b], env(out, 0.09, 0.002, 0.6));
+        break;
+      }
+      case "sleighbells": {
+        const a = osc("sine", freq * 2);
+        a.connect(out);
+        // «звяканье» бубенцов — короткий высокий шум
+        const len = Math.floor(ctx.sampleRate * 0.18);
+        const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+        const data = buf.getChannelData(0);
+        for (let i = 0; i < len; i++) data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 3);
+        const src = ctx.createBufferSource();
+        src.buffer = buf;
+        const hp = ctx.createBiquadFilter();
+        hp.type = "highpass";
+        hp.frequency.value = 6500;
+        const ng = ctx.createGain();
+        ng.gain.value = 0.5;
+        src.connect(hp).connect(ng).connect(out);
+        src.start(t);
+        run([a], env(out, 0.16, 0.002, 0.5));
+        break;
+      }
+      case "accordion": {
+        const a = osc("square", freq, -6);
+        const b = osc("square", freq, 7);
+        const lp = ctx.createBiquadFilter();
+        lp.type = "lowpass";
+        lp.frequency.value = freq * 2.6;
+        const trem = osc("sine", 5.5);
+        const tg = ctx.createGain();
+        tg.gain.value = 0.25;
+        const amp = ctx.createGain();
+        amp.gain.value = 0.75;
+        trem.connect(tg).connect(amp.gain);
+        a.connect(lp);
+        b.connect(lp);
+        lp.connect(amp).connect(out);
+        run([a, b, trem], env(out, 0.07, 0.05, duration * 1.4 + 0.12));
         break;
       }
       default:
@@ -2619,7 +2742,8 @@ const VOICE_OPTIONS = [
   { id: "choir", icon: "👼", name: "Хор" },
   { id: "pad", icon: "🌌", name: "Синт-пэд" },
 ];
-const VOICE_BY_ID = Object.fromEntries(VOICE_OPTIONS.map((v) => [v.id, v]));
+const ALL_WEATHER = [...WEATHER_PRESETS, ...ADVENT_WEATHER];
+const VOICE_BY_ID = Object.fromEntries([...VOICE_OPTIONS, ...ADVENT_VOICES].map((v) => [v.id, v]));
 const DEFAULT_VOICES = { celesta: "celesta", harp: "harp", cello: "cello", flute: "flute" };
 
 function MelodyStudio({
@@ -2634,6 +2758,10 @@ function MelodyStudio({
   harmonyPanel,
   voices = DEFAULT_VOICES,
   setVoice,
+  extraVoices = [],
+  lockedVoices = 0,
+  melodies = [],
+  onMelody,
 }) {
   const [active, setActive] = useState("celesta");
   const [isPlaying, setIsPlaying] = useState(false);
@@ -2760,6 +2888,16 @@ function MelodyStudio({
             {m.label}
           </button>
         ))}
+        {melodies.map((m) => (
+          <button
+            key={m.id}
+            type="button"
+            onClick={() => onMelody?.(m)}
+            className="px-3 py-1.5 rounded-full bg-amber-300/10 hover:bg-amber-300/20 border border-amber-300/30 text-xs text-amber-100"
+          >
+            🎁 {m.title}
+          </button>
+        ))}
       </div>
 
       {/* Дорожки */}
@@ -2801,7 +2939,7 @@ function MelodyStudio({
       {active !== "drums" && (
         <div className="flex flex-wrap items-center gap-1">
           <span className="text-[11px] text-slate-400 mr-1">Звук дорожки:</span>
-          {VOICE_OPTIONS.map((v) => (
+          {[...VOICE_OPTIONS, ...extraVoices].map((v) => (
             <button
               key={v.id}
               type="button"
@@ -2818,6 +2956,11 @@ function MelodyStudio({
               {v.icon} {v.name}
             </button>
           ))}
+          {lockedVoices > 0 && (
+            <span className="px-2.5 py-1 rounded-full text-[11px] border border-dashed border-white/15 text-slate-500" title="Открываются в адвент-календаре">
+              🔒 +{lockedVoices} в адвент-календаре
+            </span>
+          )}
         </div>
       )}
 
@@ -2941,8 +3084,11 @@ function GiftWorkshopModal({
   editGift = null,
   remainingGifts = null,
   maxGifts = 3,
+  advent = null,
 }) {
   const isEdit = Boolean(editGift);
+  const blueprints = advent?.templates?.length ? [...VOXEL_BLUEPRINTS, ...advent.templates] : VOXEL_BLUEPRINTS;
+  const palette = advent?.colors?.length ? [...VOXEL_PALETTE, ...advent.colors] : VOXEL_PALETTE;
   const [stepTab, setStepTab] = useState(0);
   const [voxels, setVoxels] = useState(() => [...VOXEL_BLUEPRINTS[0].blocks]);
   const [activeLayerY, setActiveLayerY] = useState(2);
@@ -3337,8 +3483,8 @@ function GiftWorkshopModal({
                 <div>
                   <div className="text-[11px] text-slate-400 mb-1.5">Начать с шаблона</div>
                   <div className="flex flex-wrap gap-1.5">
-                    {VOXEL_BLUEPRINTS.map((bp) => (
-                      <button key={bp.id} type="button" onClick={() => setVoxels([...bp.blocks])} className={chipCls}>
+                    {blueprints.map((bp) => (
+                      <button key={bp.id} type="button" onClick={() => setVoxels(bp.blocks.map((b) => ({ ...b })))} className={chipCls}>
                         {bp.title}
                       </button>
                     ))}
@@ -3349,7 +3495,7 @@ function GiftWorkshopModal({
                 </div>
 
                 <div className="flex flex-wrap items-center gap-1.5">
-                  {VOXEL_PALETTE.map((c) => (
+                  {palette.map((c) => (
                     <button
                       key={c.id}
                       type="button"
@@ -3433,6 +3579,19 @@ function GiftWorkshopModal({
               harmonyPanel={harmonyPanel}
               voices={voices}
               setVoice={(slot, id) => setVoices((p) => ({ ...p, [slot]: id }))}
+              extraVoices={advent?.voices || []}
+              lockedVoices={Math.max(0, ADVENT_VOICES.length - (advent?.voices?.length || 0))}
+              melodies={advent?.melodies || []}
+              onMelody={(m) => {
+                setTempoBpm(m.tempo);
+                setCelestaTrack([...m.celesta]);
+                setHarpTrack([...m.harp]);
+                setCelloTrack([...m.cello]);
+                setFluteTrack([...m.flute]);
+                setDrumTrack([...m.drums]);
+                setVoices({ ...DEFAULT_VOICES, ...m.voices });
+                setAutoplayTick((t) => t + 1);
+              }}
             />
           )}
 
@@ -3829,6 +3988,74 @@ function MiracleRingModal({
   );
 }
 
+function InviteSheet({ gift, isOwn, onClose }) {
+  const [copied, setCopied] = useState(false);
+  if (!gift) return null;
+  const url = giftShareUrl(gift);
+  const text = isOwn ? INVITE_TEXT : `Посмотри шар «${gift.card_preview?.teaser_tag || ""}» на Всемирной ёлке 🎄`;
+  const enc = encodeURIComponent;
+  const links = [
+    { id: "tg", label: "Telegram", href: `https://t.me/share/url?url=${enc(url)}&text=${enc(text)}` },
+    { id: "wa", label: "WhatsApp", href: `https://wa.me/?text=${enc(`${text} ${url}`)}` },
+    { id: "vk", label: "ВКонтакте", href: `https://vk.com/share.php?url=${enc(url)}&title=${enc(text)}` },
+  ];
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(`${text} ${url}`);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2000);
+    } catch {
+      /* буфер обмена недоступен */
+    }
+  };
+  return (
+    <div className="fixed inset-0 z-[58] bg-slate-950/70 backdrop-blur-sm flex items-end sm:items-center justify-center sm:p-4" role="dialog" aria-modal="true" aria-label="Пригласить">
+      <button type="button" aria-label="Закрыть" onClick={onClose} className="absolute inset-0" />
+      <div className={`${glassPanel} relative w-full max-w-md rounded-t-3xl sm:rounded-3xl p-4 space-y-3`}>
+        <div className="flex items-center justify-between">
+          <div className="font-serif text-lg text-amber-50">{isOwn ? "Позовите друзей зажечь свечу" : "Поделиться шаром"}</div>
+          <button type="button" onClick={onClose} aria-label="Закрыть" className="w-9 h-9 rounded-xl bg-white/5 text-slate-300">✕</button>
+        </div>
+        {!gift.offline && (
+          <img
+            src={`/api/share/gift/${encodeURIComponent(gift.id)}.png?v=${gift.candles_count || 0}`}
+            alt="Превью шара для мессенджеров"
+            className="w-full rounded-2xl border border-white/10 aspect-[1200/630] object-cover bg-white/5"
+          />
+        )}
+        <div className="text-xs text-slate-400">Так ссылка будет выглядеть в мессенджере. Каждая свеча поднимает шар выше.</div>
+        <div className="grid grid-cols-3 gap-2">
+          {links.map((l) => (
+            <a
+              key={l.id}
+              href={l.href}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="py-2.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-center text-xs text-slate-100"
+            >
+              {l.label}
+            </a>
+          ))}
+        </div>
+        <div className="flex gap-2">
+          <button type="button" onClick={copy} className="flex-1 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-xs text-slate-100">
+            {copied ? "✓ Скопировано" : "Скопировать ссылку"}
+          </button>
+          {typeof navigator !== "undefined" && navigator.share && (
+            <button
+              type="button"
+              onClick={() => navigator.share({ title: text, text, url }).catch(() => {})}
+              className="flex-1 py-2.5 rounded-xl bg-amber-300 hover:bg-amber-200 text-slate-950 text-xs font-semibold"
+            >
+              Другое…
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ShareGiftButton({ gift, title }) {
   const [copied, setCopied] = useState(false);
   const share = async () => {
@@ -4171,6 +4398,160 @@ function CandleDaySection({ quota, leaders, onShowGift }) {
   );
 }
 
+// ============================================================================
+// 5.95. АДВЕНТ-КАЛЕНДАРЬ И АЧИВКИ
+// ============================================================================
+function AdventModal({ today, opened, onOpen, onClose }) {
+  const before = today === 0;
+  const streak = adventStreak(opened, today);
+  const DEC = (d) => `${d} дек`;
+  return (
+    <div className="fixed inset-0 z-[57] bg-slate-950/80 backdrop-blur-md flex items-end sm:items-center justify-center sm:p-4" role="dialog" aria-modal="true" aria-label="Адвент-календарь">
+      <button type="button" aria-label="Закрыть" onClick={onClose} className="absolute inset-0" />
+      <div className={`${glassPanel} relative w-full max-w-3xl max-h-[94vh] overflow-y-auto rounded-t-3xl sm:rounded-3xl p-4 sm:p-5 space-y-3`}>
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <div className="font-serif text-xl text-amber-50">Адвент-календарь</div>
+            <div className="text-xs text-slate-400">
+              {before
+                ? `Первое окошко откроется 1 декабря — через ${daysUntilAdvent()} дн. Каждый день — новый подарок для мастерской.`
+                : today > 31
+                ? "Календарь этого года завершён. С Новым годом!"
+                : `Сегодня ${today} декабря. Открыто ${opened.size} из 31${streak > 1 ? ` · серия ${streak} дн. подряд 🔥` : ""}`}
+            </div>
+          </div>
+          <button type="button" onClick={onClose} aria-label="Закрыть" className="w-9 h-9 shrink-0 rounded-xl bg-white/5 text-slate-300">✕</button>
+        </div>
+        <div className="grid grid-cols-4 sm:grid-cols-7 gap-2">
+          {ADVENT_DAYS.map((d) => {
+            const isOpen = opened.has(d.day) && d.day <= today;
+            const canOpen = !isOpen && d.day <= today && today <= 31;
+            const isToday = d.day === today;
+            return (
+              <button
+                key={d.day}
+                type="button"
+                disabled={!canOpen}
+                onClick={() => onOpen(d)}
+                title={isOpen ? d.title : canOpen ? "Открыть окошко" : `Откроется ${d.day} декабря`}
+                className={`relative aspect-square rounded-2xl border p-1.5 flex flex-col items-center justify-center text-center transition ${
+                  isOpen
+                    ? "bg-amber-300/10 border-amber-300/30"
+                    : canOpen
+                    ? "bg-gradient-to-br from-rose-500/40 to-amber-400/40 border-amber-200/60 animate-pulse hover:scale-105"
+                    : "bg-white/[0.03] border-white/10"
+                } ${isToday ? "ring-2 ring-amber-300" : ""}`}
+              >
+                <span className="absolute top-1 left-1.5 text-[10px] text-slate-400">{d.day}</span>
+                {isOpen ? (
+                  <>
+                    <span className="text-2xl leading-none">{d.icon}</span>
+                    <span className="mt-1 text-[9px] leading-tight text-amber-100 line-clamp-2">{d.title}</span>
+                  </>
+                ) : canOpen ? (
+                  <span className="text-2xl">🎁</span>
+                ) : (
+                  <span className="text-lg text-slate-600">🔒</span>
+                )}
+                {!isOpen && !canOpen && <span className="mt-1 text-[9px] text-slate-600">{DEC(d.day)}</span>}
+              </button>
+            );
+          })}
+        </div>
+        <div className="text-[11px] text-slate-500">
+          Пропустили день — не страшно: прошедшие окошки можно открыть позже. Фигурки, цвета и звуки появятся в мастерской, погода
+          и гирлянда — в меню Ёлки.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TelegramSheet({ status, hasGift, onConnect, onDisconnect, onClose }) {
+  return (
+    <div className="fixed inset-0 z-[57] bg-slate-950/70 backdrop-blur-sm flex items-end sm:items-center justify-center sm:p-4" role="dialog" aria-modal="true" aria-label="Уведомления в Telegram">
+      <button type="button" aria-label="Закрыть" onClick={onClose} className="absolute inset-0" />
+      <div className={`${glassPanel} relative w-full max-w-md rounded-t-3xl sm:rounded-3xl p-5 space-y-3`}>
+        <div className="flex items-center justify-between">
+          <div className="font-serif text-lg text-amber-50">🔔 Уведомления в Telegram</div>
+          <button type="button" onClick={onClose} aria-label="Закрыть" className="w-9 h-9 rounded-xl bg-white/5 text-slate-300">✕</button>
+        </div>
+        <ul className="text-sm text-slate-300 space-y-1.5">
+          <li>🕯 «Ваш шар зажгли 5 раз»</li>
+          <li>👑 «Ваш шар — Шар дня!»</li>
+          <li>⏳ «До Кольца Чудес 1 час» и поздравление в полночь</li>
+        </ul>
+        {!status ? (
+          <div className="text-xs text-slate-400">Проверяем…</div>
+        ) : !status.enabled ? (
+          <div className="text-xs text-amber-200/90">Бот уведомлений скоро заработает — загляните чуть позже.</div>
+        ) : !hasGift ? (
+          <div className="text-xs text-amber-200/90">Сначала повесьте свой шар — уведомления приходят о нём.</div>
+        ) : status.linked ? (
+          <div className="flex items-center gap-2">
+            <span className="flex-1 text-sm text-emerald-300">✓ Подключено{status.bot ? ` к @${status.bot}` : ""}</span>
+            <button type="button" onClick={onDisconnect} className="px-3 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-xs text-slate-300">
+              Отключить
+            </button>
+          </div>
+        ) : (
+          <button type="button" onClick={onConnect} className="w-full py-3 rounded-xl bg-sky-400 hover:bg-sky-300 text-slate-950 font-semibold text-sm">
+            Подключить в Telegram
+          </button>
+        )}
+        <div className="text-[11px] text-slate-500">Бот пишет только о вашем шаре и Кольце Чудес. Отключить можно в любой момент командой /stop.</div>
+      </div>
+    </div>
+  );
+}
+
+function AchievementsModal({ data, onClose }) {
+  const items = data?.items || [];
+  return (
+    <div className="fixed inset-0 z-[57] bg-slate-950/80 backdrop-blur-md flex items-end sm:items-center justify-center sm:p-4" role="dialog" aria-modal="true" aria-label="Ачивки мастера">
+      <button type="button" aria-label="Закрыть" onClick={onClose} className="absolute inset-0" />
+      <div className={`${glassPanel} relative w-full max-w-2xl max-h-[94vh] overflow-y-auto rounded-t-3xl sm:rounded-3xl p-4 sm:p-5 space-y-3`}>
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="font-serif text-xl text-amber-50">Ачивки мастера</div>
+            <div className="text-xs text-slate-400">
+              Получено {data?.unlocked ?? 0} из {data?.total ?? items.length}
+            </div>
+          </div>
+          <button type="button" onClick={onClose} aria-label="Закрыть" className="w-9 h-9 rounded-xl bg-white/5 text-slate-300">✕</button>
+        </div>
+        {!data && <div className="text-sm text-slate-400">Считаем огоньки…</div>}
+        <div className="grid sm:grid-cols-2 gap-2">
+          {items.map((a) => (
+            <div
+              key={a.id}
+              className={`rounded-2xl border p-3 flex gap-3 items-center ${
+                a.unlocked ? "bg-amber-300/10 border-amber-300/30" : "bg-white/[0.03] border-white/10"
+              }`}
+            >
+              <div className={`text-3xl ${a.unlocked ? "" : "grayscale opacity-40"}`}>{a.icon}</div>
+              <div className="min-w-0 flex-1">
+                <div className={`text-sm font-semibold ${a.unlocked ? "text-amber-100" : "text-slate-300"}`}>{a.title}</div>
+                <div className="text-[11px] text-slate-400 leading-snug">{a.description}</div>
+                {!a.unlocked && a.target > 1 && (
+                  <div className="mt-1.5 h-1.5 rounded-full bg-white/10 overflow-hidden">
+                    <div className="h-full bg-amber-300/70" style={{ width: `${Math.round((a.progress / a.target) * 100)}%` }} />
+                  </div>
+                )}
+                {!a.unlocked && a.target > 1 && (
+                  <div className="mt-0.5 text-[10px] text-slate-500">
+                    {a.progress} / {a.target}
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function NewLookMenu({
   isOpen,
   onClose,
@@ -4189,6 +4570,9 @@ function NewLookMenu({
   onShowGift,
   garlandMode,
   onGarlandMode,
+  extraWeather = [],
+  extraGarlands = [],
+  fest = {},
 }) {
   if (!isOpen) return null;
   const chip = (active) =>
@@ -4215,16 +4599,38 @@ function NewLookMenu({
           </button>
         </div>
 
+        <MenuSection title="Праздник">
+          <div className="grid grid-cols-2 gap-1.5">
+            <button type="button" onClick={fest.onAdvent} className={`${chip(false)} relative`}>
+              📅 Адвент
+              {fest.adventBadge && <span className="absolute top-1 right-1.5 w-2 h-2 rounded-full bg-rose-400" />}
+            </button>
+            <button type="button" onClick={fest.onMap} className={chip(false)}>
+              🗺 Карта мира
+            </button>
+            <button type="button" onClick={fest.onAchievements} className={chip(false)}>
+              🏅 Ачивки{fest.achievementsLabel ? ` ${fest.achievementsLabel}` : ""}
+            </button>
+            <button type="button" onClick={fest.onTelegram} className={chip(Boolean(fest.telegramLinked))}>
+              {fest.telegramLinked ? "🔔 Telegram ✓" : "🔔 Уведомления"}
+            </button>
+            <button type="button" onClick={fest.onRehearsal} className={`${chip(false)} col-span-2`}>
+              {fest.fireworksUnlocked ? "🎆 Запустить салют" : "🎆 Репетиция полуночи"}
+            </button>
+          </div>
+        </MenuSection>
+
         <MenuSection title="Свечи дня">
           <CandleDaySection quota={candleQuota} leaders={candleLeaders} onShowGift={onShowGift} />
         </MenuSection>
 
         <MenuSection title="Гирлянда">
-          <div className="grid grid-cols-3 gap-1.5">
+          <div className={`grid ${extraGarlands.includes("ice") ? "grid-cols-4" : "grid-cols-3"} gap-1.5`}>
             {[
               { id: "warm", label: "Тёплая", icon: "🟡" },
               { id: "retro", label: "Цветная", icon: "🌈" },
               { id: "both", label: "Обе", icon: "✨" },
+              ...(extraGarlands.includes("ice") ? [{ id: "ice", label: "Ледяная", icon: "🧊" }] : []),
             ].map((g) => (
               <button key={g.id} type="button" onClick={() => onGarlandMode(g.id)} className={chip(garlandMode === g.id)}>
                 <div className="text-base leading-none mb-1">{g.icon}</div>
@@ -4247,7 +4653,7 @@ function NewLookMenu({
 
         <MenuSection title="Погода">
           <div className="grid grid-cols-2 gap-1.5">
-            {WEATHER_PRESETS.map((w) => (
+            {[...WEATHER_PRESETS, ...extraWeather].map((w) => (
               <button
                 key={w.id}
                 type="button"
@@ -4320,6 +4726,7 @@ function CompactGiftCard({
   onNft,
   onReport,
   onEdit,
+  onShare,
 }) {
   const [expanded, setExpanded] = useState(false);
   const iconBtn =
@@ -4398,6 +4805,11 @@ function CompactGiftCard({
             ? `Зажечь свечу · ${candlesLeft}`
             : "Зажечь свечу"}
         </button>
+        {!gift.offline && onShare && (
+          <button type="button" onClick={onShare} aria-label="Поделиться" title="Поделиться" className={iconBtn + " h-auto w-11"}>
+            ↗
+          </button>
+        )}
         <button
           type="button"
           onClick={() => setExpanded((v) => !v)}
@@ -4540,6 +4952,37 @@ export default function App() {
   const [serverUnlockAtMs, setServerUnlockAtMs] = useState(null);
   // Разница «часы сервера − часы устройства»: у многих телефонов время сбито на минуты.
   const [clockOffsetMs, setClockOffsetMs] = useState(0);
+
+  // --- праздник: адвент, карта, ачивки ---
+  const [adventOpened, setAdventOpened] = useState(() => loadAdventOpened());
+  const [isAdventOpen, setIsAdventOpen] = useState(false);
+  const [isMapOpen, setIsMapOpen] = useState(false);
+  const [isAchOpen, setIsAchOpen] = useState(false);
+  const [achievements, setAchievements] = useState(null);
+  const [myCity, setMyCity] = useState("");
+  const adventDay = adventToday(Date.now() + clockOffsetMs);
+  const advent = useMemo(() => adventUnlockedItems(adventOpened, adventDay), [adventOpened, adventDay]);
+  const adventBadge = adventDay >= 1 && adventDay <= 31 && !adventOpened.has(adventDay);
+  const [midnightShow, setMidnightShow] = useState(null);
+  const [telegramStatus, setTelegramStatus] = useState(null);
+  const [isTelegramOpen, setIsTelegramOpen] = useState(false);
+  const telegramLinked = Boolean(telegramStatus?.linked);
+  const refreshTelegram = useCallback(() => {
+    apiFetchTelegramStatus()
+      .then(setTelegramStatus)
+      .catch(() => setTelegramStatus({ enabled: false, linked: false }));
+  }, []);
+  useEffect(() => {
+    refreshTelegram();
+  }, [refreshTelegram]);
+  const handleTelegram = () => {
+    refreshTelegram();
+    setIsTelegramOpen(true);
+  };
+  const startMidnightShow = useCallback((mode) => {
+    musicBoxSynth.init();
+    setMidnightShow({ mode, key: Date.now() });
+  }, []);
   const [reportedGiftIds, setReportedGiftIds] = useState(() => new Set());
   // Свои шары (с сервера): у них нельзя зажечь свечу, и по ним считаем лимит.
   const [myGiftIds, setMyGiftIds] = useState(() => new Set());
@@ -4587,7 +5030,7 @@ export default function App() {
   // Новый облик: погода задаёт снег/ветер и время суток; время можно менять отдельно
   useEffect(() => {
     if (!LOOK_NEW) return;
-    const w = WEATHER_PRESETS.find((p) => p.id === newWeatherId) || WEATHER_PRESETS[0];
+    const w = ALL_WEATHER.find((p) => p.id === newWeatherId) || WEATHER_PRESETS[0];
     newWeatherRef.current = w;
     weatherPresetRef.current = {
       ...CHRISTMAS_ATMOSPHERE_PRESETS[0],
@@ -4616,10 +5059,8 @@ export default function App() {
 
   // Новый облик: камера облетает Ёлку к выбранному шару и чуть приближается.
   // Первый автоматический выбор при загрузке пропускаем — сцена открывается общим планом.
-  // По ссылке /?gift=<id> — наоборот, сразу летим к нужному шару.
-  const skipFirstFocusRef = useRef(
-    !(typeof window !== "undefined" && new URLSearchParams(window.location.search).get("gift"))
-  );
+  // По ссылке /g/<id> (или /?gift=<id>) — наоборот, сразу летим к нужному шару.
+  const skipFirstFocusRef = useRef(!deepLinkGiftId());
   const focusKey = selectedGift
     ? `${selectedGift.id}:${selectedGift.coordinates?.sequence_number}`
     : "";
@@ -4775,6 +5216,15 @@ export default function App() {
     updateTimer();
     const id = window.setInterval(updateTimer, 1000);
     return () => window.clearInterval(id);
+  }, [serverUnlockAtMs, clockOffsetMs]);
+
+  // Настоящая полночь: если Ёлка открыта, за 10 секунд до обмена начинается шоу.
+  useEffect(() => {
+    const target = serverUnlockAtMs ?? UNLOCK_TARGET_MS;
+    const msLeft = target - (Date.now() + clockOffsetMs) - 10_500;
+    if (msLeft < -5_000 || msLeft > 2 ** 31 - 1) return undefined;
+    const t = window.setTimeout(() => setMidnightShow({ mode: "live", key: target }), Math.max(0, msLeft));
+    return () => window.clearTimeout(t);
   }, [serverUnlockAtMs, clockOffsetMs]);
 
   const syncInstancedMeshes = useCallback(() => {
@@ -5018,6 +5468,7 @@ export default function App() {
           setMyGiftIds(new Set(profileRes.value.gift_ids));
         }
         if (profileRes.value.max_gifts) setMaxGifts(profileRes.value.max_gifts);
+        if (profileRes.value.city) setMyCity(profileRes.value.city);
       }
 
       const map = new Map();
@@ -5033,7 +5484,7 @@ export default function App() {
       giftsMapRef.current = map;
 
       // Ссылка /?gift=<id> открывает конкретный шар (из «Поделиться» и 3D-открытки)
-      const wantedId = new URLSearchParams(window.location.search).get("gift");
+      const wantedId = deepLinkGiftId();
       let firstGift = map.get(0);
       if (wantedId) {
         for (const g of map.values()) {
@@ -6781,6 +7232,60 @@ export default function App() {
     return () => clearTimeout(t);
   }, [candleQuota.resetsAt, clockOffsetMs, refreshCandles]);
 
+  const refreshAchievements = useCallback(async () => {
+    try {
+      const data = await apiFetchAchievements();
+      setAchievements(data);
+      const unlocked = (data.items || []).filter((a) => a.unlocked).map((a) => a.id);
+      let seen = null;
+      try {
+        seen = JSON.parse(localStorage.getItem("wfg_ach_seen") || "null");
+      } catch {
+        seen = null;
+      }
+      if (Array.isArray(seen)) {
+        const fresh = (data.items || []).filter((a) => a.unlocked && !seen.includes(a.id));
+        if (fresh.length) showToast(`🏅 Новая ачивка: ${fresh.map((a) => `${a.icon} ${a.title}`).join(", ")}`, "success");
+      }
+      try {
+        localStorage.setItem("wfg_ach_seen", JSON.stringify(unlocked));
+      } catch {
+        /* без хранилища */
+      }
+    } catch {
+      /* ачивки — не критично */
+    }
+  }, [showToast]);
+
+  useEffect(() => {
+    refreshAchievements();
+  }, [refreshAchievements]);
+
+  const openAdventWindow = (d) => {
+    setAdventOpened((prev) => {
+      const next = new Set(prev).add(d.day);
+      saveAdventOpened(next);
+      return next;
+    });
+    const where = {
+      template: "уже в мастерской, в шаблонах",
+      voice: "уже в студии мелодии",
+      color: "уже в палитре мастерской",
+      weather: "уже в меню погоды",
+      garland: "уже в меню гирлянды",
+      melody: "уже в студии — кнопки «Сочинить»",
+      effect: "запускайте из меню «Праздник»",
+    }[d.type];
+    showToast(`🎁 ${d.day} декабря: ${d.title} — ${where}!`, "success");
+    musicBoxSynth.playSingleNote("celesta", 13, "bells");
+    if (d.type === "weather") {
+      setNewWeatherId(d.id);
+      const w = ALL_WEATHER.find((p) => p.id === d.id);
+      if (w) setTimeOfDay(w.time);
+    }
+    if (d.type === "garland") setGarlandMode("ice");
+  };
+
   const focusGiftById = (giftId) => {
     for (const g of giftsMapRef.current.values()) {
       if (g.id === giftId) {
@@ -6837,6 +7342,7 @@ export default function App() {
           }
           showToast("🕯 Свеча зажжена — шар поднялся выше на Ёлке!", "success");
           refreshCandles();
+          refreshAchievements();
         })
         .catch((err) => {
           // Сервер свечу не засчитал — откатываем оптимистичный +1 и честно говорим почему.
@@ -6899,6 +7405,7 @@ export default function App() {
   };
 
   const [editingGift, setEditingGift] = useState(null);
+  const [inviteGift, setInviteGift] = useState(null);
 
   const handleOpenEdit = async (giftId) => {
     try {
@@ -6950,6 +7457,8 @@ export default function App() {
         const dto = await apiCreateGift(formData);
         newGiftNode = giftNodeFromDTO(dto);
         if (dto.my_user_id) setMyUserId(dto.my_user_id);
+        if (formData.card?.city) setMyCity(formData.card.city);
+        window.setTimeout(refreshAchievements, 800);
         const nextCount = myGiftIds.size + 1;
         setMyGiftIds((prev) => new Set(prev).add(dto.id));
         showToast(
@@ -7012,6 +7521,7 @@ export default function App() {
 
     setMyHungGift(placedGift);
     setSelectedGift(placedGift);
+    if (!placedGift.offline) window.setTimeout(() => setInviteGift(placedGift), 1600);
     scrollTargetRef.current = Math.min(
       MAX_SCROLL_DEPTH,
       placedGift.coordinates.y_height
@@ -7114,7 +7624,7 @@ export default function App() {
         weatherId={newWeatherId}
         onWeather={(id) => {
           setNewWeatherId(id);
-          const w = WEATHER_PRESETS.find((p) => p.id === id);
+          const w = ALL_WEATHER.find((p) => p.id === id);
           if (w) setTimeOfDay(w.time);
         }}
         onToTop={() => {
@@ -7141,6 +7651,35 @@ export default function App() {
         candleLeaders={candleLeaders}
         garlandMode={garlandMode}
         onGarlandMode={setGarlandMode}
+        extraWeather={advent.weather}
+        extraGarlands={advent.garlands}
+        fest={{
+          onAdvent: () => {
+            setIsMenuOpen(false);
+            setIsAdventOpen(true);
+          },
+          adventBadge,
+          onMap: () => {
+            setIsMenuOpen(false);
+            setIsMapOpen(true);
+          },
+          onAchievements: () => {
+            setIsMenuOpen(false);
+            setIsAchOpen(true);
+            refreshAchievements();
+          },
+          achievementsLabel: achievements ? `${achievements.unlocked}/${achievements.total}` : "",
+          onTelegram: () => {
+            setIsMenuOpen(false);
+            handleTelegram();
+          },
+          telegramLinked,
+          onRehearsal: () => {
+            setIsMenuOpen(false);
+            startMidnightShow(advent.fireworks ? "fireworks" : "rehearsal");
+          },
+          fireworksUnlocked: advent.fireworks,
+        }}
         onShowGift={focusGiftById}
         onOpenGuide={() => {
           setIsMenuOpen(false);
@@ -7424,6 +7963,7 @@ export default function App() {
           onNft={() => setNftModalState({ isOpen: true, gift: selectedGift, recipientCity: null })}
           onReport={handleReportGift}
           onEdit={() => handleOpenEdit(selectedGift.id)}
+          onShare={() => setInviteGift(selectedGift)}
         />
       )}
 
@@ -7683,9 +8223,77 @@ export default function App() {
         onGiftCreated={handleGiftCreated}
         onGiftUpdated={handleGiftUpdated}
         editGift={editingGift}
+        advent={advent}
         remainingGifts={isOfflineMode ? null : Math.max(0, maxGifts - myGiftIds.size)}
         maxGifts={maxGifts}
       />
+
+      {midnightShow && (
+        <React.Suspense fallback={null}>
+          <MidnightShow
+            key={midnightShow.key}
+            mode={midnightShow.mode}
+            startAtMs={serverUnlockAtMs ?? UNLOCK_TARGET_MS}
+            nowOffsetMs={clockOffsetMs}
+            onOwl={() => musicBoxSynth.playOwlChime()}
+            onDone={(mode) => {
+              setMidnightShow(null);
+              if (mode === "live") setIsRingModalOpen(true);
+            }}
+          />
+        </React.Suspense>
+      )}
+
+      {isAdventOpen && (
+        <AdventModal today={adventDay} opened={adventOpened} onOpen={openAdventWindow} onClose={() => setIsAdventOpen(false)} />
+      )}
+      {isTelegramOpen && (
+        <TelegramSheet
+          status={telegramStatus}
+          hasGift={myGiftIds.size > 0}
+          onClose={() => setIsTelegramOpen(false)}
+          onConnect={async () => {
+            // окно открываем сразу (в обработчике клика), иначе браузер его заблокирует
+            const win = window.open("about:blank", "_blank");
+            try {
+              const { url } = await apiCreateTelegramLink();
+              if (win) win.location.href = url;
+              else window.location.href = url;
+              showToast("Нажмите «Старт» в Telegram — и уведомления подключатся 🔔", "info");
+              window.setTimeout(refreshTelegram, 15000);
+            } catch (err) {
+              win?.close();
+              showToast(err.message || "Не удалось подключить бота", "warn");
+            }
+          }}
+          onDisconnect={async () => {
+            await apiDeleteTelegramLink().catch(() => {});
+            refreshTelegram();
+          }}
+        />
+      )}
+      {isAchOpen && <AchievementsModal data={achievements} onClose={() => setIsAchOpen(false)} />}
+      {isMapOpen && (
+        <React.Suspense fallback={null}>
+          <WorldMapModal
+            fetchMap={apiFetchWorldMap}
+            fetchCityLeaders={apiFetchCityLeaders}
+            myCity={myCity}
+            onShowGift={(id) => {
+              if (focusGiftById(id)) setIsMapOpen(false);
+            }}
+            onClose={() => setIsMapOpen(false)}
+          />
+        </React.Suspense>
+      )}
+
+      {inviteGift && (
+        <InviteSheet
+          gift={inviteGift}
+          isOwn={myGiftIds.has(inviteGift.id)}
+          onClose={() => setInviteGift(null)}
+        />
+      )}
 
       <WelcomeGuideModal
         isOpen={isWelcomeOpen}

@@ -97,6 +97,15 @@ export const lightGiftCandle = (giftId) =>
 export const fetchCandleStatus = () => request("/gifts/candles/status");
 export const fetchCandleLeaders = () => request("/gifts/leaders", { auth: false });
 
+export const fetchWorldMap = () => request("/world/map", { auth: false });
+export const fetchCityLeaders = (city) =>
+  request(`/world/city-leaders${city ? `?city=${encodeURIComponent(city)}` : ""}`, { auth: false });
+export const fetchAchievements = () => request("/world/achievements");
+
+export const fetchTelegramStatus = () => request("/telegram/status");
+export const createTelegramLink = () => request("/telegram/link", { method: "POST" });
+export const deleteTelegramLink = () => request("/telegram/link", { method: "DELETE" });
+
 export const reportGift = (giftId, reason = "other") =>
   request(`/gifts/${encodeURIComponent(giftId)}/report`, { method: "POST", body: { reason } });
 

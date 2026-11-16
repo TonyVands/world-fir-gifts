@@ -21,6 +21,8 @@ def _env_int(name: str, default: int) -> int:
 
 
 APP_ENV = os.getenv("APP_ENV", "development").strip().lower()
+# Публичный адрес сайта для ссылок в превью и Telegram (иначе берётся из запроса).
+PUBLIC_URL = os.getenv("PUBLIC_URL", "").strip()
 IS_PRODUCTION = APP_ENV in ("prod", "production")
 
 # Токен администратора (заголовок X-Admin-Token). Пусто — админ-ручки выключены.
@@ -38,6 +40,10 @@ MAX_GIFTS_PER_USER = _env_int("MAX_GIFTS_PER_USER", 3)
 # Свечи: каждый день у сессии DAILY_CANDLES огоньков, у одного шара — не больше
 # одной свечи в день. День считается по Москве (UTC+3, без перехода на летнее).
 DAILY_CANDLES = max(1, _env_int("DAILY_CANDLES", 3))
+# Telegram-бот для уведомлений (токен от @BotFather). Без токена всё работает,
+# просто кнопка «Уведомления» сообщает, что бот не подключён.
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+TELEGRAM_BOT_USERNAME = os.getenv("TELEGRAM_BOT_USERNAME", "").strip().lstrip("@")
 # Свой шар можно переделать раз в N дней (0 — без ограничения).
 GIFT_EDIT_COOLDOWN_DAYS = max(0, _env_int("GIFT_EDIT_COOLDOWN_DAYS", 5))
 CANDLE_DAY_TZ = timezone(timedelta(hours=_env_int("CANDLE_DAY_UTC_OFFSET_H", 3)))

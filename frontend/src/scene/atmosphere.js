@@ -342,6 +342,7 @@ export function createAtmosphereController(ctx) {
     sun: new THREE.Color(), hemiSky: new THREE.Color(), hemiGround: new THREE.Color(), disc: new THREE.Color(),
     fogDensity: 0.0085, sunIntensity: 1, hemiIntensity: 0.35, envIntensity: 1, exposure: 1,
     garland: 1, lanterns: 1, bloom: 0.5, stars: 1, discSize: 9, discGlow: 0.5, sunPos: new THREE.Vector3(),
+    aurora: 0,
   };
   let target = null;
   let weatherFogMul = 1;
@@ -378,6 +379,7 @@ export function createAtmosphereController(ctx) {
       discSize: tod.disc.size,
       discGlow: tod.disc.glow * (weather?.snow > 0.7 ? 0.2 : 1),
       sunPos: new THREE.Vector3(...tod.sunPos),
+      aurora: weather?.aurora ?? 0,
     };
     if (fir && weather) fir.uniforms.uWind.value = weather.wind ?? 1;
     ensureEnv(tod).then((rt) => {
@@ -401,7 +403,7 @@ export function createAtmosphereController(ctx) {
   function apply() {
     auroraUniforms.uTopColor.value.copy(cur.skyTop);
     auroraUniforms.uBottomColor.value.copy(cur.skyBottom);
-    auroraUniforms.uAuroraStrength.value = 0;
+    auroraUniforms.uAuroraStrength.value = cur.aurora;
     scene.background.copy(cur.skyTop);
     if (scene.fog) {
       scene.fog.color.copy(cur.fog);

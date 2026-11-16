@@ -89,6 +89,26 @@ class CandleLight(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
+class TelegramLink(Base):
+    """Мастер подключил уведомления в Telegram-боте."""
+
+    __tablename__ = "telegram_links"
+
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), primary_key=True)
+    chat_id: Mapped[str] = mapped_column(String(32), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class AppFlag(Base):
+    """Маленькое хранилище «уже сделано» для фоновых задач (переживает рестарт)."""
+
+    __tablename__ = "app_flags"
+
+    key: Mapped[str] = mapped_column(String(80), primary_key=True)
+    value: Mapped[str] = mapped_column(String(200), default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
 class GiftReport(Base):
     """Жалоба на подарок. Одна сессия — одна жалоба на подарок."""
 

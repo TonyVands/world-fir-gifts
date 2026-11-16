@@ -536,7 +536,16 @@ export function createRealisticFir({ isMobile = false } = {}) {
     retroColors.set([c.r, c.g, c.b], i * 3);
   }
   retroGeo.setAttribute("aIndex", new THREE.InstancedBufferAttribute(retroIdx, 1));
-  retroGeo.setAttribute("aColor", new THREE.InstancedBufferAttribute(retroColors, 3));
+  const retroColorAttr = new THREE.InstancedBufferAttribute(retroColors, 3);
+  retroGeo.setAttribute("aColor", retroColorAttr);
+  // «Ледяная» раскраска той же гирлянды (окошко адвент-календаря)
+  const iceColors = new Float32Array(retroCount * 3);
+  const icePalette = ["#bfe9ff", "#7cc8ff", "#ffffff", "#9fb8ff"].map((h) => new THREE.Color(h));
+  for (let i = 0; i < retroCount; i++) {
+    const c = icePalette[i % icePalette.length];
+    iceColors.set([c.r, c.g, c.b], i * 3);
+  }
+  const multiColors = retroColors.slice();
   const retroMat = new THREE.ShaderMaterial({
     uniforms: { uTime: uniforms.uTime, uGlow: glowUniform },
     vertexShader: `
@@ -668,8 +677,10 @@ export function createRealisticFir({ isMobile = false } = {}) {
     foliage: { sprayMat, snowMat, cardGeo, snowCardGeo, foliageTint },
     /** "warm" | "retro" | "both" — какие гирлянды горят. */
     setGarlandMode(mode) {
-      bulbs.visible = mode !== "retro";
+      bulbs.visible = mode !== "retro" && mode !== "ice";
       retro.visible = mode !== "warm";
+      retroColorAttr.array.set(mode === "ice" ? iceColors : multiColors);
+      retroColorAttr.needsUpdate = true;
     },
     setGarlandGlow(k) {
       glowUniform.value = k;

@@ -35,6 +35,9 @@ Amvera монтирует туда постоянное хранилище (`run
 | `MAX_GIFTS_PER_USER` | переменная | `3` | Лимит шаров на одного мастера |
 | `DAILY_CANDLES` | переменная | `3` | Свечей в сутки на гостя (одна на шар); пополняются в полночь по Москве |
 | `GIFT_EDIT_COOLDOWN_DAYS` | переменная | `5` | Как часто мастер может переделать свой шар (дней; 0 — без ограничения) |
+| `PUBLIC_URL` | переменная | — | Адрес сайта для ссылок в превью и Telegram, напр. `https://world-fir-timyrabdrakhimov.waw0.amvera.tech` |
+| `TELEGRAM_BOT_TOKEN` | секрет | — | Токен бота уведомлений от @BotFather. Без него уведомления просто выключены |
+| `TELEGRAM_BOT_USERNAME` | переменная | — | Имя бота без @ (необязательно — бот узнаёт его сам) |
 | `REPORT_QUARANTINE_THRESHOLD` | переменная | `5` | Сколько жалоб скрывает шар автоматически |
 
 Если `CONTACT_ENCRYPTION_SECRET` не задан, ключ один раз генерируется в `/data/.contact_secret`.
@@ -122,3 +125,11 @@ curl -X POST "https://<домен>/api/gifts/<gift_id>/quarantine" -H "X-Admin-T
 |---|---|---|
 | POST | `/api/ring/match` | Сформировать Кольцо сейчас (409, если уже сформировано) |
 | POST | `/api/gifts/{id}/quarantine?hidden=true\|false` | Скрыть или вернуть шар |
+
+
+## Telegram-уведомления
+
+1. В Telegram откройте @BotFather → `/newbot`, задайте имя (например «Всемирная ёлка») и username (например `world_fir_bot`).
+2. Скопируйте токен и добавьте в Amvera секрет `TELEGRAM_BOT_TOKEN`, а также переменную `PUBLIC_URL`.
+3. Перезапустите приложение. В логе появится `[Telegram] Бот @… на связи.`
+4. Бот работает через getUpdates (long polling): вебхук не нужен, но реплика должна быть одна.

@@ -1,4 +1,6 @@
 import asyncio
+import html
+import re
 import logging
 import os
 from contextlib import asynccontextmanager, suppress
@@ -7,7 +9,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 
@@ -15,13 +17,14 @@ from app.core import config
 from app.core.security import crypto_service
 from app.database import AsyncSessionLocal, Base, engine
 from app.migrations import run_migrations
-from app.routers import gifts, handshakes, ring, users, ws
+from app.routers import gifts, handshakes, ring, share, telegram, users, world, ws
+from app.services import telegram as telegram_service
 from app.services.ring import ring_auto_match_loop
 from app.services.seeder import seed_initial_gifts
 
 logger = logging.getLogger("uvicorn.error")
 
-API_VERSION = "16.6.0"
+API_VERSION = "17.0.0"
 
 
 async def _rotate_and_check_contacts() -> None:
@@ -81,8 +84,12 @@ async def lifespan(app: FastAPI):
         ring_task = asyncio.create_task(ring_auto_match_loop(AsyncSessionLocal, match_at))
         logger.info("[Lifespan] Автоформирование Кольца Чудес запланировано на %s.", match_at.isoformat())
 
+    tg_tasks = telegram_service.start(AsyncSessionLocal)
+
     yield
 
+    for task in tg_tasks:
+        task.cancel()
     if ring_task is not None:
         ring_task.cancel()
         with suppress(asyncio.CancelledError):
@@ -104,7 +111,7 @@ if config.ALLOWED_ORIGINS:
         CORSMiddleware,
         allow_origins=config.ALLOWED_ORIGINS,
         allow_credentials=False,  # авторизация — заголовком, cookies не используются
-        allow_methods=["GET", "POST"],
+        allow_methods=["GET", "POST", "PUT", "DELETE"],
         allow_headers=["Content-Type", "X-Session-Token"],
     )
 
@@ -154,6 +161,9 @@ app.include_router(users.router)
 app.include_router(handshakes.router)
 app.include_router(ring.router)
 app.include_router(ws.router)
+app.include_router(share.router)
+app.include_router(world.router)
+app.include_router(telegram.router)
 
 
 @app.get("/api/health")
@@ -174,13 +184,26 @@ if STATIC_DIR.is_dir():
         app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
 
     _INDEX = STATIC_DIR / "index.html"
+    _INDEX_HTML = _INDEX.read_text(encoding="utf-8")
 
     @app.get("/{full_path:path}", include_in_schema=False)
-    async def serve_spa(full_path: str):
+    async def serve_spa(full_path: str, request: Request):
         if full_path:
             candidate = (STATIC_DIR / full_path).resolve()
             # Защита от path traversal: отдаём только файлы ВНУТРИ static/.
             if candidate.is_file() and candidate.is_relative_to(STATIC_DIR):
                 return FileResponse(candidate)
+        # Ссылка на шар (/g/<id> или /?gift=<id>) получает своё превью в мессенджерах.
+        gift_id = request.query_params.get("gift")
+        if full_path.startswith("g/"):
+            gift_id = full_path[2:].strip("/") or gift_id
+        try:
+            tags, title = await share.page_meta(request, gift_id)
+        except Exception:  # превью не должно ломать сайт
+            logger.exception("[Share] не удалось собрать мета-теги")
+            tags, title = "", None
+        page = _INDEX_HTML.replace("</head>", tags + "</head>", 1)
+        if title:
+            page = re.sub(r"<title>.*?</title>", f"<title>{html.escape(title)}</title>", page, count=1, flags=re.S)
         # index.html не кешируем: после деплоя браузер сразу получит новую сборку.
-        return FileResponse(_INDEX, headers={"Cache-Control": "no-cache"})
+        return HTMLResponse(page, headers={"Cache-Control": "no-cache"})

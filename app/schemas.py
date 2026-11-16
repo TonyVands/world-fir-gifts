@@ -121,6 +121,8 @@ VoiceId = Literal[
     "celesta", "musicbox", "piano", "bells", "glock", "epiano",
     "harp", "guitar", "strings", "violin", "cello", "bass",
     "flute", "clarinet", "choir", "pad",
+    # звуки из адвент-календаря
+    "organ", "xylophone", "marimba", "kalimba", "harpsichord", "sleighbells", "accordion",
 ]
 
 
