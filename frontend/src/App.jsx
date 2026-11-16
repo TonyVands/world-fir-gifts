@@ -5143,6 +5143,9 @@ export default function App() {
     // ======================================================================
     let fir = null;
     let envRT = null;
+    let tiltPasses = [];
+    // Адаптивное качество: замеряем FPS после прогрева и упрощаем сцену на слабых устройствах
+    const perf = { frames: 0, start: 0, level: 0, done: false };
     if (LOOK_NEW) {
       const isMobileGpu =
         window.matchMedia?.("(pointer: coarse)").matches || window.innerWidth < 760;
@@ -5239,6 +5242,7 @@ export default function App() {
       vBlur.uniforms.r.value = 0.5;
       composer.insertPass(hBlur, composer.passes.length - 1);
       composer.insertPass(vBlur, composer.passes.length - 1);
+      tiltPasses = [hBlur, vBlur];
 
       if (typeof snowPointsMat !== "undefined" && snowPointsMat) {
         snowPointsMat.size *= 0.45;
@@ -5413,6 +5417,35 @@ export default function App() {
       auroraUniforms.uTime.value = elapsed;
       if (fir) {
         fir.update(elapsed);
+        if (!perf.done) {
+          if (elapsed > 2.5) {
+            if (!perf.start) perf.start = performance.now();
+            perf.frames++;
+            const span = performance.now() - perf.start;
+            if (span > 3000) {
+              const fps = (perf.frames * 1000) / span;
+              if (fps < 45 && perf.level === 0) {
+                // ступень 1: меньше хвои, без размытия, обычная плотность пикселей
+                perf.level = 1;
+                fir.setQuality(0.65);
+                tiltPasses.forEach((ps) => (ps.enabled = false));
+                renderer.setPixelRatio(1);
+                composer.setPixelRatio(1);
+              } else if (fps < 28 && perf.level === 1) {
+                // ступень 2: минимум хвои и без свечения
+                perf.level = 2;
+                fir.setQuality(0.45);
+                bloomPass.enabled = false;
+              } else {
+                perf.done = true;
+              }
+              perf.frames = 0;
+              perf.start = 0;
+              if (perf.level === 2) perf.done = true;
+              console.info("[WorldFir] FPS", Math.round(fps), "→ уровень качества", perf.level);
+            }
+          }
+        }
       } else {
         auroraUniforms.uTopColor.value.set(preset.skyTop);
         auroraUniforms.uBottomColor.value.set(preset.skyBottom);

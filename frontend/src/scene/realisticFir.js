@@ -252,7 +252,7 @@ export function createRealisticFir({ isMobile = false } = {}) {
   const group = new THREE.Group();
   group.name = "realistic-fir";
   const rnd = mulberry32(2026);
-  const density = isMobile ? 0.62 : 1.0;
+  const density = isMobile ? 0.62 : 0.85;
   const uniforms = { uTime: { value: 0 }, uWind: { value: 1 } };
 
   const sprayTex = makeSprayTexture();
@@ -352,6 +352,13 @@ export function createRealisticFir({ isMobile = false } = {}) {
       false,
       0
     );
+  }
+
+  // Перемешиваем лапы: тогда при снижении качества (mesh.count) пропадает
+  // равномерная доля по всей ели, а не нижние ярусы целиком.
+  for (let i = sprays.length - 1; i > 0; i--) {
+    const j = Math.floor(rnd() * (i + 1));
+    [sprays[i], sprays[j]] = [sprays[j], sprays[i]];
   }
 
   // --- инстансы хвои ---
@@ -568,6 +575,12 @@ export function createRealisticFir({ isMobile = false } = {}) {
     uniforms,
     setGiftHangers,
     stats: { sprays: sprays.length, snow: snows.length, branches: twigs.length },
+    /** 0.4..1 — доля отрисовываемой хвои и снега (адаптивное качество). */
+    setQuality(q) {
+      const k = Math.max(0.4, Math.min(1, q));
+      sprayMesh.count = Math.floor(sprays.length * k);
+      snowMesh.count = Math.floor(snows.length * k);
+    },
     update(elapsed) {
       uniforms.uTime.value = elapsed;
       for (let i = 0; i < garlandLights.length; i++) {
