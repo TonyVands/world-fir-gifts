@@ -4,7 +4,10 @@
 // "fireworks" (просто салют — окошко 31 декабря адвент-календаря).
 // ============================================================================
 import React, { useEffect, useRef, useState } from "react";
-import { CHIMES_LEAD_S, scheduleKremlinChimes, startPeal } from "../lib/bells.js";
+import { CHIMES_LEAD_S, QUARTERS_DURATION, STRIKE_INTERVAL, scheduleKremlinChimes, startPeal } from "../lib/bells.js";
+
+// от полуночи до 12-го удара (перезвон + 11 интервалов)
+const LAST_STRIKE_S = QUARTERS_DURATION + 11 * STRIKE_INTERVAL;
 
 const COLORS = ["#ffd166", "#ff6b6b", "#4ade80", "#60a5fa", "#f472b6", "#fde68a", "#a78bfa", "#ffffff"];
 
@@ -189,10 +192,10 @@ export default function MidnightShow({
   const [count, setCount] = useState(null); // секунды до полуночи (показываем последние 10)
   const [strike, setStrike] = useState(0); // какой удар курантов прозвучал
   const [owlFlying, setOwlFlying] = useState(false);
-  // для репетиции полночь — через время боя курантов от «сейчас»
-  const targetRef = useRef(mode === "live" && startAtMs ? startAtMs : Date.now() + CHIMES_LEAD_S * 1000);
+  // для репетиции «полночь» — через 10 с отсчёта от «сейчас»
+  const targetRef = useRef(mode === "live" && startAtMs ? startAtMs : Date.now() + (CHIMES_LEAD_S - 1) * 1000);
 
-  // Бой курантов: 12-й удар ровно в полночь (по часам сервера)
+  // Куранты: в полночь начинается перезвон, затем 12 ударов (как на Спасской башне)
   useEffect(() => {
     if (mode === "fireworks") return undefined;
     const ctx = getAudioContext?.();
@@ -223,13 +226,17 @@ export default function MidnightShow({
     return () => window.clearInterval(id);
   }, [phase, mode, nowOffsetMs]);
 
-  // Праздничный перезвон колоколов вместе с салютом
+  // Праздничный трезвон: сразу (для салюта из адвента) или после 12-го удара
   useEffect(() => {
     if (phase !== "celebrate") return undefined;
     const ctx = getAudioContext?.();
-    // перезвон доигрывает сам, даже когда надпись уже исчезла
-    if (ctx) startPeal(ctx, mode === "fireworks" ? 12 : 22);
-    return undefined;
+    if (!ctx) return undefined;
+    if (mode === "fireworks") {
+      startPeal(ctx, 14);
+      return undefined;
+    }
+    const t = window.setTimeout(() => startPeal(ctx, 22), (LAST_STRIKE_S + 2.5) * 1000);
+    return () => window.clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase === "celebrate"]);
 
@@ -244,10 +251,12 @@ export default function MidnightShow({
           setPhase("owl");
           setOwlFlying(true);
           onOwl?.();
-        }, 4500)
+        }, (LAST_STRIKE_S + 1.5) * 1000)
       );
     }
-    timers.push(window.setTimeout(() => onDone?.(mode), mode === "fireworks" ? 20_000 : 16_000));
+    timers.push(
+      window.setTimeout(() => onDone?.(mode), mode === "fireworks" ? 20_000 : (LAST_STRIKE_S + 14) * 1000)
+    );
     return () => timers.forEach((t) => window.clearTimeout(t));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase]);
@@ -265,23 +274,9 @@ export default function MidnightShow({
         @keyframes pop { 0% { transform: scale(1.6); opacity: 0 } 30% { opacity: 1 } 100% { transform: scale(1); opacity: 1 } }
       `}</style>
       <canvas ref={canvasRef} className="absolute inset-0 w-full h-full" />
-      {phase === "countdown" && count != null && count > 10 && (
-        <div className="absolute inset-x-0 top-[16vh] flex flex-col items-center text-center px-4">
-          <div className="rounded-2xl bg-slate-950/55 backdrop-blur-md border border-amber-200/20 px-5 py-3">
-            <div className="text-sm uppercase tracking-[0.25em] text-amber-100/90">
-              {strike > 0 ? "Бьют куранты" : "Звучат куранты"}
-            </div>
-            <div className="mt-1 font-serif text-3xl text-amber-50">
-              {strike > 0 ? `${strike} из 12` : `до Нового года ${count} с`}
-            </div>
-          </div>
-        </div>
-      )}
-      {phase === "countdown" && count != null && count <= 10 && (
+      {phase === "countdown" && count != null && (
         <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/30">
-          <div className="text-sm uppercase tracking-[0.3em] text-amber-100/80 mb-2">
-            {strike > 0 ? `Удар ${strike} из 12` : "До Нового года"}
-          </div>
+          <div className="text-sm uppercase tracking-[0.3em] text-amber-100/80 mb-2">До Нового года</div>
           <div key={count} className="font-serif text-[28vw] sm:text-[180px] leading-none text-amber-50 drop-shadow-[0_0_40px_rgba(251,191,36,0.7)]" style={{ animation: "pop .9s ease-out" }}>
             {count}
           </div>
@@ -292,6 +287,11 @@ export default function MidnightShow({
           <div className="font-serif text-4xl sm:text-6xl text-amber-50 drop-shadow-[0_0_30px_rgba(251,191,36,0.8)]" style={{ animation: "pop 1.2s ease-out" }}>
             С Новым годом!
           </div>
+          {phase === "celebrate" && (
+            <div className="mt-3 inline-block rounded-2xl bg-slate-950/45 backdrop-blur-md border border-amber-200/20 px-4 py-2 text-sm text-amber-100">
+              {strike === 0 ? "🔔 Звучит перезвон курантов…" : `🔔 Бьют куранты · ${strike} из 12`}
+            </div>
+          )}
           {phase === "owl" && (
             <div className="mt-3 text-sm sm:text-base text-amber-100/90">
               {mode === "live"

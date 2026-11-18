@@ -213,13 +213,26 @@ async def my_collection(
     out = {"mine": [], "lit": [], "today": config.candle_day()}
     if not session_hash:
         return out
+    # места всех шаров — одним запросом (а не по запросу на каждый шар)
+    ranks = {
+        gid: i
+        for i, (gid,) in enumerate(
+            (
+                await session.execute(
+                    select(Gift.id)
+                    .where(Gift.is_quarantined.is_(False))
+                    .order_by(Gift.quality_score.desc(), Gift.sequence_number.asc())
+                )
+            ).all()
+        )
+    }
     user = await find_user_by_hash(session, session_hash)
     if user is not None:
         gifts = (
             await session.execute(select(Gift).where(Gift.author_id == user.id).order_by(Gift.created_at.desc()))
         ).scalars().all()
         for g in gifts:
-            item = _to_dto(g, await _rank_of(session, g)).model_dump(mode="json")
+            item = _to_dto(g, ranks.get(g.id, len(ranks))).model_dump(mode="json")
             item["rank"] = item["coordinates"]["sequence_number"] + 1
             item["is_quarantined"] = g.is_quarantined
             item["can_edit"] = _can_edit(g) and not g.is_quarantined
@@ -239,7 +252,7 @@ async def my_collection(
         )
     ).all()
     for g, times, day in rows:
-        item = _to_dto(g, await _rank_of(session, g)).model_dump(mode="json")
+        item = _to_dto(g, ranks.get(g.id, len(ranks))).model_dump(mode="json")
         item["rank"] = item["coordinates"]["sequence_number"] + 1
         item["my_candles"] = int(times)
         item["last_lit_day"] = day

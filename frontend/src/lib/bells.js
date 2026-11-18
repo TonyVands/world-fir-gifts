@@ -1,158 +1,241 @@
 // ============================================================================
-// Колокола для новогодней полуночи: бой курантов и праздничный перезвон.
-// Всё синтезируется Web Audio: у настоящего колокола обертоны негармоничны
-// (гул, основной тон, малая терция, квинта, октава…), и каждый затухает со
-// своей скоростью — так получается «медный» звук, а не электронный писк.
-// Четвертной перезвон — «Вестминстерские четверти» (1793 г., общественное
-// достояние), затем 12 ударов большого колокола, последний — ровно в полночь.
+// Колокола новогодней полуночи: бой курантов и русский праздничный трезвон.
+//
+// Реализм достигается тем же, из чего состоит звук настоящего литого колокола:
+//  • модальный синтез: у колокола негармоничный спектр — «гул» на октаву ниже,
+//    основной тон, малая терция, квинта, «номинал», децима и т.д.;
+//  • каждый обертон — пара близких мод (дублет): колокол не идеально круглый,
+//    моды расщеплены на доли герца, отсюда характерное «уа-уа» биение;
+//  • у каждой моды своё время затухания: верхние гаснут за секунды, гул тянется
+//    десятки секунд;
+//  • удар языка: короткий металлический «клац» (шум + россыпь высоких мод);
+//  • пространство: свёртка с синтетической импульсной характеристикой площади
+//    (ранние отражения от стен + длинный тёмный хвост) и «воздух» — срез верхов.
+// Как у настоящих курантов: Новый год наступает с первым звуком перезвона
+// (так объясняет звонарь Кремля), затем 12 ударов часового колокола.
 // ============================================================================
 
-const PARTIALS = [
-  // [множитель частоты, громкость, доля времени затухания]
-  [0.5, 0.32, 1.5], // гул (hum)
-  [1.0, 0.55, 1.0], // основной (prime)
-  [1.183, 0.28, 0.7], // малая терция (tierce)
-  [1.506, 0.2, 0.6], // квинта (quint)
-  [2.0, 0.32, 0.5], // октава (nominal)
-  [2.514, 0.12, 0.35],
-  [2.662, 0.1, 0.3],
-  [3.011, 0.08, 0.25],
-  [4.166, 0.05, 0.18],
+// [отношение к номиналу, громкость, T60 в долях базового затухания, расщепление дублета, Гц]
+const BIG_BELL = [
+  [0.25, 0.22, 1.0, 0.25], // гул (hum)
+  [0.5, 0.42, 0.85, 0.35], // основной (prime)
+  [0.6, 0.30, 0.6, 0.6], // малая терция (tierce)
+  [0.75, 0.16, 0.45, 0.5], // квинта (quint)
+  [1.0, 0.50, 0.55, 0.8], // номинал — «нота удара»
+  [1.25, 0.16, 0.3, 1.1], // децима
+  [1.335, 0.13, 0.26, 1.2], // ундецима
+  [1.5, 0.12, 0.22, 1.4], // дуодецима
+  [2.0, 0.10, 0.16, 1.8], // верхняя октава
+  [2.66, 0.06, 0.1, 2.4],
+  [3.2, 0.05, 0.07, 3.0],
 ];
+const SMALL_BELL = BIG_BELL.filter((_, i) => i !== 0 && i !== 6 && i !== 9);
 
-let bus = null;
-function master(ctx) {
-  if (bus && bus.context === ctx) return bus;
-  const comp = ctx.createDynamicsCompressor();
-  comp.threshold.value = -14;
-  comp.ratio.value = 4;
-  const g = ctx.createGain();
-  g.gain.value = 0.9;
-  g.connect(comp).connect(ctx.destination);
-  bus = g;
-  return bus;
+let chain = null;
+function makeImpulse(ctx, seconds, decay, brightness) {
+  const len = Math.floor(ctx.sampleRate * seconds);
+  const ir = ctx.createBuffer(2, len, ctx.sampleRate);
+  for (let ch = 0; ch < 2; ch++) {
+    const d = ir.getChannelData(ch);
+    let lp = 0;
+    for (let i = 0; i < len; i++) {
+      const t = i / ctx.sampleRate;
+      // со временем хвост темнеет: однополюсный фильтр с растущим сглаживанием
+      const k = Math.min(0.995, brightness + t * 0.12);
+      lp = lp * k + (Math.random() * 2 - 1) * (1 - k);
+      d[i] = lp * Math.exp(-t * decay) * 3;
+    }
+    // ранние отражения — фасады вокруг площади
+    [0.031, 0.047, 0.083, 0.119, 0.167].forEach((tt, j) => {
+      const at = Math.floor((tt + ch * 0.006) * ctx.sampleRate);
+      if (at < len) d[at] += (0.5 - j * 0.07) * (ch ? 0.9 : 1);
+    });
+  }
+  return ir;
 }
 
-/** Один удар колокола. freq — основной тон, decay — секунды до затухания. */
-export function strikeBell(ctx, t, freq, gain = 0.5, decay = 5) {
+/** Общая цепочка: сухой сигнал + реверберация площади + «воздух» + компрессор. */
+function output(ctx) {
+  if (chain && chain.ctx === ctx) return chain.input;
+  const input = ctx.createGain();
+  const air = ctx.createBiquadFilter();
+  air.type = "lowpass";
+  air.frequency.value = 6500;
+  const dry = ctx.createGain();
+  dry.gain.value = 0.55;
+  const wet = ctx.createGain();
+  wet.gain.value = 0.75;
+  const conv = ctx.createConvolver();
+  conv.buffer = makeImpulse(ctx, 6.5, 0.9, 0.35);
+  const pre = ctx.createDelay(0.2);
+  pre.delayTime.value = 0.035;
+  const comp = ctx.createDynamicsCompressor();
+  comp.threshold.value = -16;
+  comp.ratio.value = 3;
+  comp.attack.value = 0.005;
+  comp.release.value = 0.4;
+  const master = ctx.createGain();
+  master.gain.value = 0.8;
+  input.connect(air);
+  air.connect(dry).connect(comp);
+  air.connect(pre).connect(conv).connect(wet).connect(comp);
+  comp.connect(master).connect(ctx.destination);
+  chain = { ctx, input };
+  return input;
+}
+
+/**
+ * Удар колокола. nominal — частота «ноты удара» (Гц), decay — T60 гула в секундах,
+ * big — полный набор мод (часовой колокол) или облегчённый (малые колокола).
+ */
+export function strikeBell(ctx, t, nominal, gain = 0.5, decay = 12, big = true) {
   if (!ctx) return;
-  const out = master(ctx);
-  const pan = ctx.createStereoPanner ? ctx.createStereoPanner() : null;
-  const sum = ctx.createGain();
-  sum.gain.value = gain;
-  if (pan) {
-    pan.pan.value = (Math.random() - 0.5) * 0.5;
-    sum.connect(pan).connect(out);
-  } else sum.connect(out);
-  PARTIALS.forEach(([m, g, d]) => {
-    const o = ctx.createOscillator();
-    o.type = "sine";
-    // лёгкая расстройка — у литого колокола тоны «бьются»
-    o.frequency.setValueAtTime(freq * m * (1 + (Math.random() - 0.5) * 0.002), t);
-    const env = ctx.createGain();
-    const len = Math.max(0.3, decay * d);
-    env.gain.setValueAtTime(0.0001, t);
-    env.gain.linearRampToValueAtTime(g, t + 0.004);
-    env.gain.exponentialRampToValueAtTime(0.0001, t + len);
-    o.connect(env).connect(sum);
-    o.start(t);
-    o.stop(t + len + 0.05);
+  const out = output(ctx);
+  const bus = ctx.createGain();
+  bus.gain.value = gain;
+  if (ctx.createStereoPanner) {
+    const pan = ctx.createStereoPanner();
+    pan.pan.value = (Math.random() - 0.5) * 0.35;
+    bus.connect(pan).connect(out);
+  } else bus.connect(out);
+  // сила удара каждый раз немного разная — как у живого механизма
+  const force = 0.85 + Math.random() * 0.3;
+  const modes = big ? BIG_BELL : SMALL_BELL;
+  modes.forEach(([ratio, amp, t60k, split]) => {
+    const f = nominal * ratio;
+    if (f > 9000) return;
+    const t60 = Math.max(0.25, decay * t60k);
+    [-1, 1].forEach((side) => {
+      const o = ctx.createOscillator();
+      o.type = "sine";
+      o.frequency.setValueAtTime(f + (side * split) / 2, t);
+      const g = ctx.createGain();
+      // верхние моды сильнее при сильном ударе
+      const a = (amp / 2) * (ratio > 1 ? force * force : force) * (side > 0 ? 0.92 : 1);
+      g.gain.setValueAtTime(0.00001, t);
+      g.gain.linearRampToValueAtTime(a, t + 0.0025 + ratio * 0.0008);
+      // экспоненциальное затухание до -60 дБ за t60
+      g.gain.setTargetAtTime(0.00001, t + 0.003, t60 / 6.9);
+      o.connect(g).connect(bus);
+      o.start(t);
+      o.stop(t + t60 + 0.2);
+    });
   });
-  // удар языка — короткий металлический щелчок
-  const n = Math.floor(ctx.sampleRate * 0.05);
+  // удар языка: металлический клац
+  const n = Math.floor(ctx.sampleRate * 0.04);
   const buf = ctx.createBuffer(1, n, ctx.sampleRate);
   const data = buf.getChannelData(0);
-  for (let i = 0; i < n; i++) data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / n, 4);
+  for (let i = 0; i < n; i++) data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / n, 6);
   const src = ctx.createBufferSource();
   src.buffer = buf;
   const bp = ctx.createBiquadFilter();
   bp.type = "bandpass";
-  bp.frequency.value = Math.min(8000, freq * 6);
-  bp.Q.value = 2;
+  bp.frequency.value = Math.min(7000, nominal * 7.3);
+  bp.Q.value = 1.4;
   const ng = ctx.createGain();
-  ng.gain.value = 0.25;
-  src.connect(bp).connect(ng).connect(sum);
+  ng.gain.value = 0.32 * force;
+  src.connect(bp).connect(ng).connect(bus);
   src.start(t);
+  [5.4, 6.8, 8.9, 11.7].forEach((m, i) => {
+    const f = nominal * m;
+    if (f > 11000) return;
+    const o = ctx.createOscillator();
+    o.frequency.value = f;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.05 / (i + 1), t);
+    g.gain.exponentialRampToValueAtTime(0.00001, t + 0.12 + i * 0.03);
+    o.connect(g).connect(bus);
+    o.start(t);
+    o.stop(t + 0.3);
+  });
 }
 
-// Вестминстерские четверти (ми мажор), 4 фразы по 4 ноты
-const E4 = 329.63;
-const Fs4 = 369.99;
-const Gs4 = 415.3;
-const B3 = 246.94;
-const QUARTERS = [
-  [Gs4, Fs4, E4, B3],
-  [E4, Gs4, Fs4, B3],
-  [E4, Fs4, Gs4, E4],
-  [Gs4, E4, Fs4, B3],
+// --- бой курантов -----------------------------------------------------------
+// Четвертной перезвон: 4 «перечасных» колокола, полный час — 4 фразы.
+const Q = { a: 659.25, b: 587.33, c: 523.25, d: 392.0 };
+const QUARTER_PHRASES = [
+  [Q.a, Q.b, Q.c, Q.d],
+  [Q.c, Q.a, Q.b, Q.d],
+  [Q.c, Q.b, Q.a, Q.c],
+  [Q.a, Q.c, Q.b, Q.d],
 ];
-const NOTE = 0.75;
-const PHRASE_GAP = 0.9;
-export const STRIKE_INTERVAL = 2.6;
-const BEFORE_STRIKES = 2.2;
+const NOTE = 0.82;
+const PHRASE_GAP = 1.1;
+export const STRIKE_INTERVAL = 3.2;
+const AFTER_QUARTERS = 2.4;
+const HOUR_BELL_NOMINAL = 196; // крупный часовой колокол (соль малой октавы)
 
-/** Сколько секунд до полуночи нужно начинать бой курантов. */
-export const CHIMES_LEAD_S = (() => {
-  const quarters = QUARTERS.length * (4 * NOTE) + (QUARTERS.length - 1) * PHRASE_GAP;
-  return Math.ceil(quarters + BEFORE_STRIKES + 11 * STRIKE_INTERVAL + 1);
-})();
+/** Длительность перезвона до первого удара. */
+export const QUARTERS_DURATION =
+  QUARTER_PHRASES.length * 4 * NOTE + (QUARTER_PHRASES.length - 1) * PHRASE_GAP + AFTER_QUARTERS;
+/** Шоу начинается за ~10 с до полуночи (отсчёт), куранты — в 00:00. */
+export const CHIMES_LEAD_S = 11;
 
 /**
- * Планирует бой курантов так, чтобы 12-й удар пришёлся ровно на tMidnight
- * (время AudioContext). Если до полуночи меньше, часть ударов пропускается.
- * Возвращает времена ударов (для счётчика на экране).
+ * Куранты как на Спасской башне: в tMidnight начинается перезвон,
+ * затем 12 ударов часового колокола. Возвращает времена ударов.
  */
 export function scheduleKremlinChimes(ctx, tMidnight) {
   if (!ctx) return [];
   const now = ctx.currentTime;
-  const strikes = [];
-  for (let k = 0; k < 12; k++) strikes.push(tMidnight - (11 - k) * STRIKE_INTERVAL);
-  // четверти перед ударами
-  let t = strikes[0] - BEFORE_STRIKES - (QUARTERS.length * 4 * NOTE + (QUARTERS.length - 1) * PHRASE_GAP);
-  QUARTERS.forEach((phrase, pi) => {
+  let t = tMidnight;
+  QUARTER_PHRASES.forEach((phrase, pi) => {
     phrase.forEach((f, ni) => {
-      if (t >= now) strikeBell(ctx, t, f, ni === 3 ? 0.42 : 0.34, 3.2);
+      if (t >= now - 0.02) strikeBell(ctx, Math.max(now, t), f, ni === 3 ? 0.34 : 0.28, 7, false);
       t += NOTE;
     });
-    if (pi < QUARTERS.length - 1) t += PHRASE_GAP;
+    if (pi < QUARTER_PHRASES.length - 1) t += PHRASE_GAP;
   });
-  // двенадцать ударов большого колокола
-  strikes.forEach((ts) => {
-    if (ts >= now - 0.05) strikeBell(ctx, Math.max(now, ts), 110, 0.75, 7);
-  });
+  t += AFTER_QUARTERS - NOTE;
+  const strikes = [];
+  for (let k = 0; k < 12; k++) {
+    const ts = t + k * STRIKE_INTERVAL;
+    strikes.push(ts);
+    if (ts >= now - 0.02) strikeBell(ctx, Math.max(now, ts), HOUR_BELL_NOMINAL, 0.62, 16, true);
+  }
   return strikes;
 }
 
-/** Праздничный перезвон (как на колокольне): 6 колоколов, «круги» и переборы. */
-export function startPeal(ctx, seconds = 25) {
-  if (!ctx) return () => {};
-  const scale = [587.33, 523.25, 493.88, 440.0, 392.0, 369.99]; // ре мажор вниз
-  let order = [0, 1, 2, 3, 4, 5];
-  const step = 0.27;
-  let t = ctx.currentTime + 0.05;
-  const end = t + seconds;
-  let row = 0;
-  let stopped = false;
-  const timer = setInterval(() => {
-    if (stopped) return;
-    while (t < ctx.currentTime + 1.2 && t < end) {
-      order.forEach((b, i) => {
-        strikeBell(ctx, t + i * step, scale[b], 0.3 + (b === 5 ? 0.06 : 0), 2.6);
-      });
-      // каждые 2 больших колокола: гул низкого
-      if (row % 2 === 0) strikeBell(ctx, t, 146.83, 0.35, 5);
-      t += order.length * step + step; // «пропуск» между кругами, как у звонарей
-      row += 1;
-      // перестановка пар (простейший «перебор» plain hunt)
-      const swapFrom = row % 2;
-      const next = [...order];
-      for (let i = swapFrom; i + 1 < next.length; i += 2) [next[i], next[i + 1]] = [next[i + 1], next[i]];
-      order = next;
-    }
-    if (t >= end) clearInterval(timer);
-  }, 250);
-  return () => {
-    stopped = true;
-    clearInterval(timer);
+// --- праздничный трезвон -----------------------------------------------------
+/**
+ * Русский трезвон: зазвонные (малые) колокола частят узором, подзвонные
+ * держат ритм, большой колокол — на сильные доли. Планирование порциями:
+ * scheduleUntil(t) дописывает удары до момента t.
+ */
+export function createPeal(ctx, t0, seconds = 22) {
+  const beat = 0.24;
+  const zazvon = [1174.66, 987.77, 1318.51, 880.0]; // малые колокола
+  const podzvon = [523.25, 440.0]; // средние
+  const big = 261.63; // большой
+  const pattern = [0, 1, 2, 1, 0, 3, 2, 3]; // узор зазвонных на 8 долей
+  const end = t0 + seconds;
+  let step = 0;
+  let t = t0;
+  return {
+    scheduleUntil(limit) {
+      while (t < Math.min(limit, end)) {
+        const fade = Math.min(1, (end - t) / 4); // к концу звон стихает
+        strikeBell(ctx, t, zazvon[pattern[step % 8]], 0.13 * fade, 3.2, false);
+        if (step % 2 === 0) strikeBell(ctx, t, podzvon[(step / 2) % 2], 0.16 * fade, 5, false);
+        if (step % 8 === 0) strikeBell(ctx, t, big, 0.36 * fade, 12, true);
+        t += beat * (0.97 + Math.random() * 0.06); // живой звонарь чуть «дышит»
+        step += 1;
+      }
+    },
+    get done() {
+      return t >= end;
+    },
   };
+}
+
+/** Трезвон в реальном времени (порции по ~1,5 с вперёд). */
+export function startPeal(ctx, seconds = 22) {
+  if (!ctx) return () => {};
+  const peal = createPeal(ctx, ctx.currentTime + 0.05, seconds);
+  peal.scheduleUntil(ctx.currentTime + 1.5);
+  const timer = setInterval(() => {
+    peal.scheduleUntil(ctx.currentTime + 1.5);
+    if (peal.done) clearInterval(timer);
+  }, 400);
+  return () => clearInterval(timer);
 }

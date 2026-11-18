@@ -106,7 +106,16 @@ export const fetchTelegramStatus = () => request("/telegram/status");
 export const createTelegramLink = () => request("/telegram/link", { method: "POST" });
 export const deleteTelegramLink = () => request("/telegram/link", { method: "DELETE" });
 
-export const fetchMyCollection = () => request("/gifts/collection/me");
+export const fetchMyCollection = async () => {
+  // на телефоне с тяжёлой 3D-сценой первый ответ может прийти позже — даём время и одну повторную попытку
+  try {
+    return await request("/gifts/collection/me", { timeoutMs: 20000 });
+  } catch (err) {
+    if (!isNetworkError(err)) throw err;
+    await new Promise((r) => setTimeout(r, 800));
+    return request("/gifts/collection/me", { timeoutMs: 20000 });
+  }
+};
 
 export const reportGift = (giftId, reason = "other") =>
   request(`/gifts/${encodeURIComponent(giftId)}/report`, { method: "POST", body: { reason } });

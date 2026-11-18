@@ -2899,40 +2899,486 @@ function MelodyStudio({
   };
 
   const scale = SCALE_MODES.find((m) => m.id === scaleId) || SCALE_MODES[0];
+  const cursor = isPlaying ? playStep : null;
+
+  // ---------- общие данные ----------
+  const MUSICIANS = [
+    { id: "celesta", role: "Мелодия", hint: "главный голос", color: "#fcd34d", cell: "bg-amber-300" },
+    { id: "harp", role: "Аккорды", hint: "подыгрывает", color: "#7dd3fc", cell: "bg-sky-300" },
+    { id: "cello", role: "Бас", hint: "низкие ноты", color: "#fb7185", cell: "bg-rose-400" },
+    { id: "flute", role: "Соло", hint: "украшения", color: "#6ee7b7", cell: "bg-emerald-300" },
+    { id: "drums", role: "Ритм", hint: "бубенцы и удары", color: "#c4b5fd", cell: "bg-violet-300" },
+  ];
+  const allVoices = [...VOICE_OPTIONS, ...extraVoices];
+  const voiceOf = (id) => (id === "drums" ? null : VOICE_BY_ID[voices[id] || DEFAULT_VOICES[id]]);
+  const SOLFEGE = { C: "До", D: "Ре", E: "Ми", F: "Фа", G: "Соль", A: "Ля", B: "Си" };
+  const ruNote = (label) => {
+    const m = /^([A-G])(#?)(\d)$/.exec(label || "");
+    if (!m) return { name: label, oct: "" };
+    return { name: `${SOLFEGE[m[1]]}${m[2] ? "♯" : ""}`, oct: m[3] };
+  };
+  const DRUM_RU = { 6: "Треуг.", 5: "Шейкер", 4: "Бубенцы", 3: "Щелчок", 2: "Малый", 1: "Бочка" };
+
+  // ---------- отмена ----------
+  const historyRef = useRef([]);
+  const snapshot = () => {
+    historyRef.current.push({ ...tracks });
+    if (historyRef.current.length > 40) historyRef.current.shift();
+  };
+  const undo = () => {
+    const prev = historyRef.current.pop();
+    if (!prev) return;
+    Object.keys(INSTRUMENT_SHORT).forEach((id) => setTrack(id, () => [...(prev[id] || Array(16).fill(0))]));
+  };
+  const editTrack = (id, updater) => {
+    snapshot();
+    setTrack(id, updater);
+  };
+
+  // ---------- режим ----------
+  const [mode, setModeState] = useState(() => {
+    try {
+      return localStorage.getItem("wfg_studio_mode") || "simple";
+    } catch {
+      return "simple";
+    }
+  });
+  const setMode = (m) => {
+    setModeState(m);
+    try {
+      localStorage.setItem("wfg_studio_mode", m);
+    } catch {
+      /* без хранилища */
+    }
+  };
+
+  // ---------- простой режим: настроение → вариант → инструмент ----------
+  const [moodId, setMoodId] = useState(null);
+  const [batch, setBatch] = useState(0);
+  const [variantIdx, setVariantIdx] = useState(null);
+  const [showAllVoices, setShowAllVoices] = useState(false);
+  const moods = [...MELODY_MOODS, ...melodies.map((m) => ({ id: `advent_${m.id}`, label: `🎁 ${m.title}`, melody: m }))];
+  const mood = moods.find((m) => m.id === moodId) || null;
+  const variants = useMemo(() => {
+    if (!mood) return [];
+    if (mood.melody) return [{ ...mood.melody, title: "Как в окошке календаря" }];
+    return [0, 1, 2].map((k) => {
+      const h = harmonizeOrchestraFromWish(`${mood.text} #${batch * 3 + k}`, scaleId);
+      return { ...h, voices: mood.voices, title: ["Вариант А", "Вариант Б", "Вариант В"][k] };
+    });
+  }, [mood, batch, scaleId]);
+  const pickVariant = (i) => {
+    snapshot();
+    setVariantIdx(i);
+    onMelody?.(variants[i]); // применяет темп, ноты и звуки — и запускает воспроизведение
+  };
+  const pickMood = (id) => {
+    setMoodId(id);
+    setVariantIdx(null);
+    setBatch(0);
+  };
+  const LEAD_TOP = ["musicbox", "piano", "bells", "celesta", "glock", "harp", "flute", "choir"];
+
+  // ---------- подробный режим ----------
+  const [voiceMenuFor, setVoiceMenuFor] = useState(null);
+  const meta = MUSICIANS.find((m) => m.id === active) || MUSICIANS[0];
   const rows =
     active === "drums"
       ? DRUM_INSTRUMENTS.filter((r) => r.index > 0)
       : NOTE_META.filter((r) => r.index > 0 && scale.notes.includes(r.index));
   const track = tracks[active] || [];
-  const slotVoice = (id) => (id === "drums" ? null : VOICE_BY_ID[voices[id] || DEFAULT_VOICES[id]]);
-  const meta = { ...INSTRUMENT_SHORT[active], ...(slotVoice(active) ? { icon: slotVoice(active).icon, name: slotVoice(active).name } : {}) };
-  const cursor = isPlaying ? playStep : null;
-
   const toggleCell = (stepIdx, noteVal) => {
     musicBoxSynth.playSingleNote(active, noteVal, active === "drums" ? null : voices[active] || DEFAULT_VOICES[active]);
-    setTrack(active, (prev) => prev.map((n, i) => (i === stepIdx ? (n === noteVal ? 0 : noteVal) : n)));
+    editTrack(active, (prev) => prev.map((n, i) => (i === stepIdx ? (n === noteVal ? 0 : noteVal) : n)));
   };
+  const sectionTitle = "text-[11px] uppercase tracking-[0.14em] text-slate-400";
+  const iconBtn = "h-11 rounded-xl flex items-center justify-center transition";
 
-  const btn = "h-10 rounded-xl flex items-center justify-center transition";
+  // мини-дорожка: столбики по высоте ноты
+  const MiniPattern = ({ arr, color }) => (
+    <div className="flex-1 grid gap-[2px] items-end h-6" style={{ gridTemplateColumns: "repeat(16, minmax(0, 1fr))" }} aria-hidden="true">
+      {Array.from({ length: 16 }).map((_, i) => {
+        const v = arr?.[i] || 0;
+        const h = v > 0 ? 25 + Math.min(75, (v / 18) * 75) : 8;
+        return (
+          <div
+            key={i}
+            style={{ height: `${h}%`, background: v > 0 ? color : "rgba(255,255,255,0.12)", opacity: cursor === i ? 1 : v > 0 ? 0.85 : 1 }}
+            className={`rounded-[2px] ${cursor === i ? "ring-1 ring-white" : ""}`}
+          />
+        );
+      })}
+    </div>
+  );
+
   return (
     <div className="space-y-3">
-      {/* Транспорт: как в любом плеере/секвенсоре */}
-      <div className="flex flex-wrap items-center gap-2 rounded-2xl bg-white/5 border border-white/10 p-2">
+      {/* Переключатель режимов */}
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-sm text-slate-300">
+          {mode === "simple" ? "Мелодия за три касания" : "В шкатулке играют 5 музыкантов"}
+        </div>
+        <div className="flex gap-1 p-1 rounded-xl bg-white/5 shrink-0" role="tablist" aria-label="Режим студии">
+          {[
+            { id: "simple", label: "Просто" },
+            { id: "pro", label: "Подробно" },
+          ].map((m) => (
+            <button
+              key={m.id}
+              type="button"
+              role="tab"
+              aria-selected={mode === m.id}
+              onClick={() => setMode(m.id)}
+              className={`h-9 px-3 rounded-lg text-sm ${mode === m.id ? "bg-white/15 text-white font-semibold" : "text-slate-400"}`}
+            >
+              {m.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {mode === "simple" ? (
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <div className={sectionTitle}>Шаг 1 · Настроение</div>
+            <div className="grid grid-cols-2 gap-2">
+              {moods.map((m) => (
+                <button
+                  key={m.id}
+                  type="button"
+                  onClick={() => pickMood(m.id)}
+                  className={`text-left px-3.5 py-3 rounded-2xl border transition ${
+                    moodId === m.id ? "bg-amber-300/15 border-amber-300 text-amber-50" : "bg-white/[0.04] border-white/10 text-slate-200 hover:bg-white/10"
+                  }`}
+                >
+                  <div className="text-sm font-semibold">{m.label}</div>
+                  {m.voices && (
+                    <div className="text-[11px] text-slate-400 mt-0.5 truncate">
+                      {Object.values(m.voices)
+                        .slice(0, 3)
+                        .map((v) => VOICE_BY_ID[v]?.name)
+                        .filter(Boolean)
+                        .join(", ")}
+                    </div>
+                  )}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className={`space-y-2 ${mood ? "" : "opacity-40 pointer-events-none"}`} aria-disabled={!mood}>
+            <div className={sectionTitle}>Шаг 2 · Послушайте и выберите</div>
+            {variants.map((v, i) => {
+              const selected = variantIdx === i;
+              return (
+                <button
+                  key={`${batch}-${i}`}
+                  type="button"
+                  onClick={() => (selected && isPlaying ? stop() : pickVariant(i))}
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-2xl border text-left ${
+                    selected ? "bg-amber-300/15 border-amber-300" : "bg-white/[0.04] border-white/10 hover:bg-white/10"
+                  }`}
+                >
+                  <span className={`w-11 h-11 rounded-full flex items-center justify-center shrink-0 ${selected ? "bg-amber-300 text-slate-950" : "bg-white/10 text-white"}`}>
+                    {selected && isPlaying ? "❚❚" : "▶"}
+                  </span>
+                  <span className="flex-1 min-w-0">
+                    <span className={`block text-sm font-semibold ${selected ? "text-amber-50" : "text-slate-100"}`}>{v.title}</span>
+                    <span className="block text-[11px] text-slate-400">
+                      {selected ? (isPlaying ? "играет…" : "выбран") : `темп ${v.tempo}`}
+                    </span>
+                  </span>
+                  <MiniPattern arr={v.celesta} color={selected ? "#fcd34d" : "#94a3b8"} />
+                </button>
+              );
+            })}
+            {mood && !mood.melody && (
+              <button
+                type="button"
+                onClick={() => {
+                  setBatch((b) => b + 1);
+                  setVariantIdx(null);
+                }}
+                className="w-full h-11 rounded-2xl border border-dashed border-white/20 text-sm text-slate-300 hover:bg-white/5"
+              >
+                🎲 Сочинить ещё три
+              </button>
+            )}
+            {!mood && <div className="text-xs text-slate-500">Сначала выберите настроение</div>}
+          </div>
+
+          <div className={`space-y-2 ${variantIdx != null ? "" : "opacity-40 pointer-events-none"}`}>
+            <div className={sectionTitle}>Шаг 3 · Главный инструмент</div>
+            <div className="grid grid-cols-4 gap-2">
+              {(showAllVoices ? allVoices : allVoices.filter((v) => LEAD_TOP.includes(v.id))).map((v) => {
+                const on = (voices.celesta || DEFAULT_VOICES.celesta) === v.id;
+                return (
+                  <button
+                    key={v.id}
+                    type="button"
+                    onClick={() => {
+                      setVoice("celesta", v.id);
+                      musicBoxSynth.playSingleNote("celesta", 9, v.id);
+                    }}
+                    className={`h-16 rounded-2xl border flex flex-col items-center justify-center gap-0.5 ${
+                      on ? "bg-amber-300/15 border-amber-300 text-amber-50" : "bg-white/[0.04] border-white/10 text-slate-200"
+                    }`}
+                  >
+                    <span className="text-lg leading-none">{v.icon}</span>
+                    <span className="text-[11px]">{v.name}</span>
+                  </button>
+                );
+              })}
+            </div>
+            <button type="button" onClick={() => setShowAllVoices((s) => !s)} className="text-xs text-amber-200/90 underline-offset-2 hover:underline">
+              {showAllVoices ? "Свернуть" : `Все инструменты (${allVoices.length})`}
+            </button>
+            {variantIdx != null && (
+              <div className="text-xs text-slate-400">
+                Хотите поменять отдельные ноты или звук аккордов и баса? Откройте{" "}
+                <button type="button" onClick={() => setMode("pro")} className="text-amber-200 underline">
+                  «Подробно»
+                </button>
+                .
+              </div>
+            )}
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {/* Ансамбль из 5 музыкантов */}
+          <div className="space-y-1.5">
+            {MUSICIANS.map((m, i) => {
+              const v = voiceOf(m.id);
+              const arr = tracks[m.id] || [];
+              const notes = arr.filter((n) => n > 0).length;
+              const isActive = active === m.id;
+              return (
+                <div key={m.id} className="space-y-1.5">
+                  <div
+                    className={`p-2 rounded-2xl border transition space-y-1.5 ${
+                      isActive ? "bg-white/10 border-white/30" : "bg-white/[0.04] border-white/10"
+                    } ${mutes[m.id] ? "opacity-50" : ""}`}
+                    style={isActive ? { boxShadow: `inset 3px 0 0 ${m.color}` } : undefined}
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <button
+                        type="button"
+                        onClick={() => setActive(m.id)}
+                        aria-label={`Редактировать: ${m.role}`}
+                        className="w-10 h-10 shrink-0 rounded-xl flex items-center justify-center font-bold text-slate-950"
+                        style={{ background: m.color }}
+                      >
+                        {i + 1}
+                      </button>
+                      <button type="button" onClick={() => setActive(m.id)} className="flex-1 min-w-0 text-left">
+                        <div className="text-sm font-semibold text-white leading-tight">{m.role}</div>
+                        <div className="text-[11px] text-slate-400 leading-tight truncate">{m.hint}</div>
+                      </button>
+                      {m.id !== "drums" ? (
+                        <button
+                          type="button"
+                          onClick={() => setVoiceMenuFor((x) => (x === m.id ? null : m.id))}
+                          aria-expanded={voiceMenuFor === m.id}
+                          className="shrink-0 h-10 px-3 rounded-xl bg-white/10 hover:bg-white/15 text-xs text-white flex items-center gap-1.5"
+                          title="Сменить инструмент"
+                        >
+                          <span>{v?.icon}</span>
+                          <span className="max-w-[96px] truncate">{v?.name}</span>
+                          <span className="text-slate-400">▾</span>
+                        </button>
+                      ) : (
+                        <span className="shrink-0 h-10 px-3 rounded-xl bg-white/5 text-xs text-slate-300 flex items-center">🥁 Ударные</span>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => setMutes((p) => ({ ...p, [m.id]: !p[m.id] }))}
+                        aria-label={`${mutes[m.id] ? "Включить" : "Заглушить"}: ${m.role}`}
+                        className={`w-10 h-10 shrink-0 rounded-xl text-sm ${mutes[m.id] ? "bg-rose-500/20 text-rose-200" : "bg-white/5 text-slate-300"}`}
+                      >
+                        {mutes[m.id] ? "🔇" : "🔈"}
+                      </button>
+                    </div>
+                    <button type="button" onClick={() => setActive(m.id)} className="w-full flex items-center pl-[50px] h-6" aria-label={`${m.role}: ${notes} нот`}>
+                      {notes > 0 ? (
+                        <MiniPattern arr={arr} color={m.color} />
+                      ) : (
+                        <span className="text-[11px] text-slate-500">молчит — нажмите, чтобы добавить ноты</span>
+                      )}
+                    </button>
+                  </div>
+                  {voiceMenuFor === m.id && (
+                    <div className="flex flex-wrap gap-1.5 p-2 rounded-2xl bg-black/30 border border-white/10">
+                      {allVoices.map((vo) => (
+                        <button
+                          key={vo.id}
+                          type="button"
+                          onClick={() => {
+                            setVoice(m.id, vo.id);
+                            musicBoxSynth.playSingleNote(m.id, 7, vo.id);
+                          }}
+                          className={`px-2.5 py-1.5 rounded-full text-xs border ${
+                            (voices[m.id] || DEFAULT_VOICES[m.id]) === vo.id
+                              ? "bg-white/20 border-white/40 text-white"
+                              : "bg-white/[0.04] border-white/10 text-slate-300"
+                          }`}
+                        >
+                          {vo.icon} {vo.name}
+                        </button>
+                      ))}
+                      {lockedVoices > 0 && (
+                        <span className="px-2.5 py-1.5 rounded-full text-[11px] border border-dashed border-white/15 text-slate-500">
+                          🔒 ещё {lockedVoices} в адвент-календаре
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Ноты выбранного музыканта */}
+          <div className="rounded-2xl bg-black/30 border border-white/10 p-1.5 sm:p-2">
+            <div className="flex items-center justify-between px-1 pb-1.5 text-[11px] text-slate-400">
+              <span>
+                Ноты: <b style={{ color: meta.color }}>{meta.role}</b>
+                {voiceOf(active) ? ` · ${voiceOf(active).name}` : ""}
+              </span>
+              <span>нажмите клетку — нота зазвучит</span>
+            </div>
+            <div className="grid grid-cols-[38px_repeat(16,minmax(0,1fr))] sm:grid-cols-[50px_repeat(16,minmax(0,1fr))] gap-[2px] sm:gap-[3px] mb-1">
+              <div />
+              {Array.from({ length: 16 }).map((_, i) => (
+                <button
+                  key={i}
+                  type="button"
+                  onClick={() => (isPlaying ? play(i) : setPausedAt(i))}
+                  title="Играть с этого шага"
+                  className={`h-4 rounded text-[9px] font-mono ${
+                    cursor === i
+                      ? "bg-amber-300 text-slate-950"
+                      : !isPlaying && pausedAt === i
+                      ? "bg-amber-300/30 text-amber-100"
+                      : i % 4 === 0
+                      ? "text-slate-300"
+                      : "text-slate-600"
+                  }`}
+                >
+                  {i + 1}
+                </button>
+              ))}
+            </div>
+            {rows.map((row) => {
+              const rn = active === "drums" ? { name: DRUM_RU[row.index] || row.short, oct: "" } : ruNote(row.label);
+              return (
+                <div key={row.index} className="grid grid-cols-[38px_repeat(16,minmax(0,1fr))] sm:grid-cols-[50px_repeat(16,minmax(0,1fr))] gap-[2px] sm:gap-[3px] mb-[2px] sm:mb-[3px]">
+                  <div className="text-[10px] text-slate-300 text-right pr-1 self-center truncate">
+                    {rn.name}
+                    {rn.oct && <sup className="text-slate-500 ml-px">{rn.oct}</sup>}
+                  </div>
+                  {Array.from({ length: 16 }).map((_, sIdx) => {
+                    const on = track[sIdx] === row.index;
+                    const isCur = cursor === sIdx;
+                    return (
+                      <button
+                        key={sIdx}
+                        type="button"
+                        onClick={() => toggleCell(sIdx, row.index)}
+                        aria-label={`Шаг ${sIdx + 1}, ${rn.name}${rn.oct}`}
+                        aria-pressed={on}
+                        className={`h-6 rounded-[5px] transition-colors ${
+                          on
+                            ? `${meta.cell} ${isCur ? "brightness-125 scale-105" : ""}`
+                            : isCur
+                            ? "bg-amber-200/25"
+                            : Math.floor(sIdx / 4) % 2 === 0
+                            ? "bg-white/[0.07] hover:bg-white/15"
+                            : "bg-white/[0.035] hover:bg-white/15"
+                        }`}
+                      />
+                    );
+                  })}
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => editTrack(active, () => Array(16).fill(0))}
+              className="px-3 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-xs text-slate-300"
+            >
+              Очистить «{meta.role}»
+            </button>
+            {active === "drums" &&
+              DRUM_GROOVE_PRESETS.map((gr) => (
+                <button
+                  key={gr.id}
+                  type="button"
+                  onClick={() => editTrack("drums", () => [...gr.pattern])}
+                  className="px-3 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-xs text-violet-200"
+                >
+                  {gr.title}
+                </button>
+              ))}
+            <button
+              type="button"
+              onClick={() => setShowHarmony((v) => !v)}
+              aria-expanded={showHarmony}
+              className="ml-auto px-3 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-xs text-slate-300"
+            >
+              Лад и аккорды {showHarmony ? "▴" : "▾"}
+            </button>
+          </div>
+
+          {showHarmony && (
+            <div className="space-y-3 rounded-2xl bg-white/5 border border-white/10 p-3">
+              <div className="flex flex-wrap gap-1.5">
+                {SCALE_MODES.map((m) => (
+                  <button
+                    key={m.id}
+                    type="button"
+                    onClick={() => onScaleChange(m.id)}
+                    title={m.mood}
+                    className={`px-3 py-1.5 rounded-full text-xs border ${
+                      scaleId === m.id
+                        ? "bg-amber-300 text-slate-950 border-amber-200 font-semibold"
+                        : "bg-white/5 border-white/10 text-slate-300 hover:bg-white/10"
+                    }`}
+                  >
+                    {SCALE_SHORT[m.id] || m.title}
+                  </button>
+                ))}
+              </div>
+              {harmonyPanel}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Плеер: всегда под рукой внизу */}
+      <div className="sticky bottom-0 z-10 -mx-4 sm:-mx-5 px-4 sm:px-5 py-2 bg-[#0a1226]/95 backdrop-blur border-t border-white/10 flex items-center gap-2">
         <button
           type="button"
           onClick={() => (isPlaying ? pause() : play())}
           aria-label={isPlaying ? "Пауза" : "Играть"}
-          className={`${btn} w-12 bg-amber-300 hover:bg-amber-200 text-slate-950 text-lg font-bold`}
+          className="w-12 h-12 rounded-full bg-amber-300 hover:bg-amber-200 text-slate-950 text-lg font-bold flex items-center justify-center shrink-0"
         >
           {isPlaying ? "❚❚" : "▶"}
         </button>
+        <button type="button" onClick={stop} aria-label="Стоп" className={`${iconBtn} w-11 bg-white/5 text-slate-200 shrink-0`}>
+          ■
+        </button>
         <button
           type="button"
-          onClick={stop}
-          aria-label="Стоп"
-          className={`${btn} w-10 bg-white/5 hover:bg-white/10 text-slate-200`}
+          onClick={undo}
+          aria-label="Отменить"
+          title="Отменить"
+          className={`${iconBtn} w-11 bg-white/5 text-slate-200 shrink-0`}
         >
-          ■
+          ↶
         </button>
         <button
           type="button"
@@ -2940,12 +3386,15 @@ function MelodyStudio({
           aria-pressed={loop}
           aria-label="Повтор"
           title="Повтор"
-          className={`${btn} w-10 ${loop ? "bg-amber-300/20 text-amber-200 ring-1 ring-amber-300/50" : "bg-white/5 text-slate-400"}`}
+          className={`${iconBtn} w-11 shrink-0 ${loop ? "bg-amber-300/20 text-amber-200 ring-1 ring-amber-300/50" : "bg-white/5 text-slate-400"}`}
         >
           🔁
         </button>
-        <div className="flex items-center gap-2 px-2 min-w-[150px] flex-1">
-          <span className="text-[11px] text-slate-400 whitespace-nowrap">Темп {tempo}</span>
+        <div className="flex-1 min-w-0 px-1">
+          <div className="flex justify-between text-[10px] text-slate-400">
+            <span>Темп {tempo}</span>
+            <span className="font-mono">{String((cursor ?? pausedAt) + 1).padStart(2, "0")}/16</span>
+          </div>
           <input
             type="range"
             min={60}
@@ -2954,211 +3403,10 @@ function MelodyStudio({
             value={tempo}
             onChange={(e) => setTempo(Number(e.target.value))}
             aria-label="Темп"
-            className="flex-1 accent-amber-300"
+            className="w-full accent-amber-300"
           />
         </div>
-        <div className="font-mono text-xs text-slate-400 w-12 text-right">
-          {String((cursor ?? pausedAt) + 1).padStart(2, "0")}/16
-        </div>
       </div>
-
-      {/* Сочинить за меня */}
-      <div className="flex flex-wrap items-center gap-1.5">
-        <span className="text-[11px] text-slate-400 mr-1">Сочинить:</span>
-        {MELODY_MOODS.map((m) => (
-          <button
-            key={m.id}
-            type="button"
-            onClick={() => onCompose(m.text, m.voices)}
-            className="px-3 py-1.5 rounded-full bg-white/5 hover:bg-white/10 border border-white/10 text-xs text-slate-200"
-          >
-            {m.label}
-          </button>
-        ))}
-        {melodies.map((m) => (
-          <button
-            key={m.id}
-            type="button"
-            onClick={() => onMelody?.(m)}
-            className="px-3 py-1.5 rounded-full bg-amber-300/10 hover:bg-amber-300/20 border border-amber-300/30 text-xs text-amber-100"
-          >
-            🎁 {m.title}
-          </button>
-        ))}
-      </div>
-
-      {/* Дорожки */}
-      <div className="flex gap-1.5 overflow-x-auto pb-0.5">
-        {Object.entries(INSTRUMENT_SHORT).map(([id, base]) => {
-          const used = (tracks[id] || []).some((n) => n > 0);
-          const v = slotVoice(id);
-          const m = v ? { ...base, icon: v.icon, name: v.name } : base;
-          return (
-            <div key={id} className="flex shrink-0">
-              <button
-                type="button"
-                onClick={() => setActive(id)}
-                className={`pl-3 pr-2 py-1.5 rounded-l-xl text-xs whitespace-nowrap border ${
-                  active === id
-                    ? `bg-white/15 border-white/25 text-white ring-1 ${m.ring}`
-                    : "bg-white/5 border-white/10 text-slate-300"
-                }`}
-              >
-                {m.icon} {m.name}
-                {used && <span className={`ml-1.5 inline-block w-1.5 h-1.5 rounded-full ${m.cell}`} />}
-              </button>
-              <button
-                type="button"
-                onClick={() => setMutes((p) => ({ ...p, [id]: !p[id] }))}
-                aria-label={`${mutes[id] ? "Включить" : "Заглушить"} ${m.name}`}
-                title={mutes[id] ? "Включить звук" : "Заглушить"}
-                className={`px-2 rounded-r-xl text-[11px] border border-l-0 ${
-                  mutes[id] ? "bg-rose-500/20 border-rose-400/40 text-rose-200" : "bg-white/5 border-white/10 text-slate-400"
-                }`}
-              >
-                {mutes[id] ? "🔇" : "🔈"}
-              </button>
-            </div>
-          );
-        })}
-      </div>
-
-      {active !== "drums" && (
-        <div className="flex flex-wrap items-center gap-1">
-          <span className="text-[11px] text-slate-400 mr-1">Звук дорожки:</span>
-          {[...VOICE_OPTIONS, ...extraVoices].map((v) => (
-            <button
-              key={v.id}
-              type="button"
-              onClick={() => {
-                setVoice(active, v.id);
-                musicBoxSynth.playSingleNote(active, 7, v.id);
-              }}
-              className={`px-2.5 py-1 rounded-full text-[11px] border ${
-                (voices[active] || DEFAULT_VOICES[active]) === v.id
-                  ? "bg-white/15 border-white/30 text-white"
-                  : "bg-white/[0.03] border-white/10 text-slate-400 hover:text-slate-200"
-              }`}
-            >
-              {v.icon} {v.name}
-            </button>
-          ))}
-          {lockedVoices > 0 && (
-            <span className="px-2.5 py-1 rounded-full text-[11px] border border-dashed border-white/15 text-slate-500" title="Открываются в адвент-календаре">
-              🔒 +{lockedVoices} в адвент-календаре
-            </span>
-          )}
-        </div>
-      )}
-
-      {/* Сетка 16 шагов с бегущей полосой */}
-      <div className="rounded-2xl bg-black/30 border border-white/10 p-1.5 sm:p-2">
-        <div>
-          <div className="grid grid-cols-[30px_repeat(16,minmax(0,1fr))] sm:grid-cols-[44px_repeat(16,minmax(0,1fr))] gap-[2px] sm:gap-[3px] mb-1">
-            <div />
-            {Array.from({ length: 16 }).map((_, i) => (
-              <button
-                key={i}
-                type="button"
-                onClick={() => (isPlaying ? play(i) : setPausedAt(i))}
-                title="Играть с этого шага"
-                className={`h-4 rounded text-[9px] font-mono ${
-                  cursor === i
-                    ? "bg-amber-300 text-slate-950"
-                    : !isPlaying && pausedAt === i
-                    ? "bg-amber-300/30 text-amber-100"
-                    : i % 4 === 0
-                    ? "text-slate-300"
-                    : "text-slate-600"
-                }`}
-              >
-                {i + 1}
-              </button>
-            ))}
-          </div>
-          {rows.map((row) => (
-            <div key={row.index} className="grid grid-cols-[30px_repeat(16,minmax(0,1fr))] sm:grid-cols-[44px_repeat(16,minmax(0,1fr))] gap-[2px] sm:gap-[3px] mb-[2px] sm:mb-[3px]">
-              <div className="text-[10px] font-mono text-slate-400 text-right pr-1.5 self-center truncate">
-                {active === "drums" ? row.short : row.label}
-              </div>
-              {Array.from({ length: 16 }).map((_, sIdx) => {
-                const on = track[sIdx] === row.index;
-                const isCur = cursor === sIdx;
-                return (
-                  <button
-                    key={sIdx}
-                    type="button"
-                    onClick={() => toggleCell(sIdx, row.index)}
-                    aria-label={`Шаг ${sIdx + 1}, ${row.label}`}
-                    aria-pressed={on}
-                    className={`h-6 rounded-[5px] transition-colors ${
-                      on
-                        ? `${meta.cell} ${isCur ? "brightness-125 scale-105" : ""}`
-                        : isCur
-                        ? "bg-amber-200/25"
-                        : Math.floor(sIdx / 4) % 2 === 0
-                        ? "bg-white/[0.07] hover:bg-white/15"
-                        : "bg-white/[0.035] hover:bg-white/15"
-                    }`}
-                  />
-                );
-              })}
-            </div>
-          ))}
-        </div>
-      </div>
-
-      <div className="flex flex-wrap items-center gap-2">
-        <button
-          type="button"
-          onClick={() => setTrack(active, () => Array(16).fill(0))}
-          className="px-3 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 text-xs text-slate-300"
-        >
-          Очистить «{meta.name}»
-        </button>
-        {active === "drums" &&
-          DRUM_GROOVE_PRESETS.map((gr) => (
-            <button
-              key={gr.id}
-              type="button"
-              onClick={() => setTrack("drums", () => [...gr.pattern])}
-              className="px-3 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 text-xs text-violet-200"
-            >
-              {gr.title}
-            </button>
-          ))}
-        <button
-          type="button"
-          onClick={() => setShowHarmony((v) => !v)}
-          aria-expanded={showHarmony}
-          className="ml-auto px-3 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 text-xs text-slate-300"
-        >
-          Лад и аккорды {showHarmony ? "▴" : "▾"}
-        </button>
-      </div>
-
-      {showHarmony && (
-        <div className="space-y-3 rounded-2xl bg-white/5 border border-white/10 p-3">
-          <div className="flex flex-wrap gap-1.5">
-            {SCALE_MODES.map((m) => (
-              <button
-                key={m.id}
-                type="button"
-                onClick={() => onScaleChange(m.id)}
-                title={m.mood}
-                className={`px-3 py-1.5 rounded-full text-xs border ${
-                  scaleId === m.id
-                    ? "bg-amber-300 text-slate-950 border-amber-200 font-semibold"
-                    : "bg-white/5 border-white/10 text-slate-300 hover:bg-white/10"
-                }`}
-              >
-                {SCALE_SHORT[m.id] || m.title}
-              </button>
-            ))}
-          </div>
-          {harmonyPanel}
-        </div>
-      )}
     </div>
   );
 }
@@ -4668,7 +4916,7 @@ function dayLabel(day, today) {
   return d.toLocaleDateString("ru-RU", { day: "numeric", month: "long" });
 }
 
-function MyGiftsSheet({ data, loading, initialTab = "mine", litToday, candlesLeft, onShow, onShare, onEdit, onCreate, onClose }) {
+function MyGiftsSheet({ data, loading, error, onRetry, initialTab = "mine", litToday, candlesLeft, onShow, onShare, onEdit, onCreate, onClose }) {
   const [tab, setTab] = useState(initialTab);
   const mine = data?.mine || [];
   const lit = data?.lit || [];
@@ -4702,7 +4950,15 @@ function MyGiftsSheet({ data, loading, initialTab = "mine", litToday, candlesLef
         </div>
         <div className="p-3 overflow-y-auto flex-1 space-y-2">
           {loading && !data && <div className="text-sm text-slate-400 p-3">Собираем шары…</div>}
-          {!loading && list.length === 0 && (
+          {!loading && error && !data && (
+            <div className="text-center p-6 space-y-3">
+              <div className="text-sm text-slate-300">Ёлка не ответила вовремя — так бывает на слабой связи.</div>
+              <button type="button" onClick={onRetry} className="px-5 py-2.5 rounded-xl bg-amber-300 text-slate-950 font-semibold text-sm">
+                Попробовать ещё раз
+              </button>
+            </div>
+          )}
+          {!loading && !(error && !data) && list.length === 0 && (
             <div className="text-center p-6 space-y-3">
               <div className="text-4xl">{tab === "mine" ? "🎁" : "🕯"}</div>
               <div className="text-sm text-slate-300">
@@ -7735,13 +7991,15 @@ export default function App() {
   const [myGiftsSheet, setMyGiftsSheet] = useState(null); // null | "mine" | "lit"
   const [collection, setCollection] = useState(null);
   const [collectionLoading, setCollectionLoading] = useState(false);
+  const [collectionError, setCollectionError] = useState(false);
   const openMyGifts = (tab) => {
     setIsMenuOpen(false);
     setMyGiftsSheet(tab);
     setCollectionLoading(true);
+    setCollectionError(false);
     apiFetchMyCollection()
       .then(setCollection)
-      .catch(() => showToast("Нет связи с Ёлкой — список не загрузился.", "warn"))
+      .catch(() => setCollectionError(true))
       .finally(() => setCollectionLoading(false));
   };
 
@@ -8622,6 +8880,8 @@ export default function App() {
           key={myGiftsSheet}
           data={collection}
           loading={collectionLoading}
+          error={collectionError}
+          onRetry={() => openMyGifts(myGiftsSheet)}
           initialTab={myGiftsSheet}
           litToday={litGiftIds}
           candlesLeft={candleQuota.remaining}
