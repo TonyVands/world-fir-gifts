@@ -106,6 +106,8 @@ export const fetchTelegramStatus = () => request("/telegram/status");
 export const createTelegramLink = () => request("/telegram/link", { method: "POST" });
 export const deleteTelegramLink = () => request("/telegram/link", { method: "DELETE" });
 
+export const fetchMyCollection = () => request("/gifts/collection/me");
+
 export const reportGift = (giftId, reason = "other") =>
   request(`/gifts/${encodeURIComponent(giftId)}/report`, { method: "POST", body: { reason } });
 

@@ -83,3 +83,16 @@ async def test_edit_blocked_after_unlock(client, monkeypatch):
     monkeypatch.setattr(gifts_router, "is_new_year_unlocked", lambda now=None: True)
     res = await client.put(f"/api/gifts/{gift['id']}", json=_edited(), headers=OWNER)
     assert res.status_code == 409
+
+
+async def test_my_collection_lists_own_and_lit(client):
+    gift = await _create(client)
+    other = (await client.post("/api/gifts", json=GIFT_PAYLOAD, headers=STRANGER)).json()
+    await client.post(f"/api/gifts/{other['id']}/candle", headers=OWNER)
+    body = (await client.get("/api/gifts/collection/me", headers=OWNER)).json()
+    assert [g["id"] for g in body["mine"]] == [gift["id"]]
+    assert body["mine"][0]["can_edit"] is True and body["mine"][0]["rank"] >= 1
+    assert [g["id"] for g in body["lit"]] == [other["id"]]
+    assert body["lit"][0]["my_candles"] == 1
+    empty = (await client.get("/api/gifts/collection/me")).json()
+    assert empty["mine"] == [] and empty["lit"] == []

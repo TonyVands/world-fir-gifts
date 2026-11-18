@@ -21,3 +21,23 @@ body,
     display: none;
   }
 }
+
+/* Высоты окон под мобильные браузеры: dvh учитывает адресную строку iOS/Android,
+   иначе верх окна (с кнопкой закрытия) уезжает за край экрана. vh — запасной вариант.
+   В @layer utilities — чтобы sm:h-auto / sm:max-h-* на компьютере их перекрывали. */
+@layer utilities {
+  .wfg-h-94 { height: 94vh; height: 94dvh; }
+  .wfg-mh-94 { max-height: 94vh; max-height: 94dvh; }
+  .wfg-mh-92 { max-height: 92vh; max-height: 92dvh; }
+  .wfg-mh-88 { max-height: 88vh; max-height: 88dvh; }
+  .wfg-mh-75 { max-height: 75vh; max-height: 75dvh; }
+  /* шапка окна с кнопкой ✕ всегда видна при прокрутке (для панелей с p-5) */
+  .wfg-sticky-head {
+    position: sticky; top: -1.25rem; z-index: 5;
+    margin: -1.25rem -1.25rem 0; padding: 1.25rem 1.25rem 0.6rem;
+    background: rgba(8, 14, 30, 0.94); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
+    border-top-left-radius: inherit; border-top-right-radius: inherit;
+  }
+  /* отступ под «полоску» iPhone внизу */
+  .wfg-safe-b { padding-bottom: max(0.75rem, env(safe-area-inset-bottom)); }
+}

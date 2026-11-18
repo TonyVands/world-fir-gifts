@@ -202,6 +202,51 @@ def _my_gift_dto(gift: Gift) -> MyGiftDTO:
     )
 
 
+@router.get("/collection/me")
+async def my_collection(
+    response: Response,
+    session_hash: str | None = Depends(optional_session_hash),
+    session: AsyncSession = Depends(get_db),
+):
+    """«Мои шары»: шары мастера и шары, которым он зажигал свечи."""
+    response.headers["Cache-Control"] = "no-store"
+    out = {"mine": [], "lit": [], "today": config.candle_day()}
+    if not session_hash:
+        return out
+    user = await find_user_by_hash(session, session_hash)
+    if user is not None:
+        gifts = (
+            await session.execute(select(Gift).where(Gift.author_id == user.id).order_by(Gift.created_at.desc()))
+        ).scalars().all()
+        for g in gifts:
+            item = _to_dto(g, await _rank_of(session, g)).model_dump(mode="json")
+            item["rank"] = item["coordinates"]["sequence_number"] + 1
+            item["is_quarantined"] = g.is_quarantined
+            item["can_edit"] = _can_edit(g) and not g.is_quarantined
+            nxt = _next_edit_at(g)
+            item["next_edit_at"] = nxt.isoformat() if nxt else None
+            out["mine"].append(item)
+    cnt = func.count(CandleLight.id).label("times")
+    last_day = func.max(CandleLight.day).label("last_day")
+    rows = (
+        await session.execute(
+            select(Gift, cnt, last_day)
+            .join(CandleLight, CandleLight.gift_id == Gift.id)
+            .where(CandleLight.voter_hash == session_hash, Gift.is_quarantined.is_(False))
+            .group_by(Gift.id)
+            .order_by(last_day.desc(), cnt.desc())
+            .limit(100)
+        )
+    ).all()
+    for g, times, day in rows:
+        item = _to_dto(g, await _rank_of(session, g)).model_dump(mode="json")
+        item["rank"] = item["coordinates"]["sequence_number"] + 1
+        item["my_candles"] = int(times)
+        item["last_lit_day"] = day
+        out["lit"].append(item)
+    return out
+
+
 @router.get("/{gift_id}/mine", response_model=MyGiftDTO)
 async def get_my_gift(
     gift_id: str,

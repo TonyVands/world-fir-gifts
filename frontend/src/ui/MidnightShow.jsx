@@ -7,9 +7,14 @@ import React, { useEffect, useRef, useState } from "react";
 
 const COLORS = ["#ffd166", "#ff6b6b", "#4ade80", "#60a5fa", "#f472b6", "#fde68a", "#a78bfa", "#ffffff"];
 
-function useFireworks(canvasRef, active, intensity = 1) {
+function useFireworks(canvasRef, active, intensity = 1, fireworks3d = null) {
   useEffect(() => {
     if (!active) return undefined;
+    // Есть 3D-сцена — салют настоящий, объёмный, над Ёлкой; плоский холст — запасной вариант
+    if (fireworks3d) {
+      fireworks3d.start(0, intensity);
+      return () => fireworks3d.stop();
+    }
     const canvas = canvasRef.current;
     if (!canvas) return undefined;
     const ctx = canvas.getContext("2d");
@@ -134,7 +139,7 @@ function useFireworks(canvasRef, active, intensity = 1) {
       window.removeEventListener("resize", resize);
       audio?.close?.();
     };
-  }, [canvasRef, active, intensity]);
+  }, [canvasRef, active, intensity, fireworks3d]);
 }
 
 function Owl() {
@@ -169,7 +174,7 @@ function Owl() {
   );
 }
 
-export default function MidnightShow({ mode, startAtMs, nowOffsetMs = 0, onOwl, onDone }) {
+export default function MidnightShow({ mode, startAtMs, nowOffsetMs = 0, onOwl, onDone, fireworks3d = null }) {
   const canvasRef = useRef(null);
   const [phase, setPhase] = useState(mode === "fireworks" ? "celebrate" : "countdown");
   const [count, setCount] = useState(10);
@@ -189,7 +194,7 @@ export default function MidnightShow({ mode, startAtMs, nowOffsetMs = 0, onOwl, 
     return () => window.clearInterval(id);
   }, [phase, mode, startAtMs, nowOffsetMs]);
 
-  useFireworks(canvasRef, phase === "celebrate" || phase === "owl", mode === "fireworks" ? 0.9 : 1.3);
+  useFireworks(canvasRef, phase === "celebrate" || phase === "owl", mode === "fireworks" ? 0.9 : 1.3, fireworks3d);
 
   useEffect(() => {
     if (phase !== "celebrate") return undefined;

@@ -75,8 +75,8 @@ export default function WorldMapModal({ fetchMap, fetchCityLeaders, myCity, onSh
   return (
     <div className="fixed inset-0 z-[57] bg-slate-950/80 backdrop-blur-md flex items-end sm:items-center justify-center sm:p-4" role="dialog" aria-modal="true" aria-label="Карта мира шаров">
       <button type="button" aria-label="Закрыть" onClick={onClose} className="absolute inset-0" />
-      <div className="relative w-full max-w-4xl max-h-[94vh] overflow-y-auto rounded-t-3xl sm:rounded-3xl bg-[#070d1c]/95 border border-white/10 shadow-2xl p-4 sm:p-5 space-y-3">
-        <div className="flex items-center justify-between gap-2">
+      <div className="relative w-full max-w-4xl wfg-mh-94 overflow-y-auto rounded-t-3xl sm:rounded-3xl bg-[#070d1c]/95 border border-white/10 shadow-2xl p-5 space-y-3 wfg-safe-b">
+        <div className="wfg-sticky-head flex items-center justify-between gap-2">
           <div>
             <div className="font-serif text-xl text-amber-50">Карта мира шаров</div>
             {data && (
@@ -104,7 +104,7 @@ export default function WorldMapModal({ fetchMap, fetchCityLeaders, myCity, onSh
                 {v.label}
               </button>
             ))}
-            <button type="button" onClick={onClose} aria-label="Закрыть" className="w-9 h-9 rounded-xl bg-white/5 text-slate-300 ml-1">
+            <button type="button" onClick={onClose} aria-label="Закрыть" className="w-10 h-10 rounded-xl bg-white/10 text-slate-200 text-lg ml-1">
               ✕
             </button>
           </div>

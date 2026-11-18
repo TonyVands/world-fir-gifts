@@ -10,6 +10,7 @@ import { VerticalTiltShiftShader } from "three/examples/jsm/shaders/VerticalTilt
 import { createRealisticFir, createCapLoopGeometry } from "./scene/realisticFir.js";
 import { createClearing } from "./scene/clearing.js";
 import { TIME_OF_DAY, WEATHER_PRESETS, createAtmosphereController } from "./scene/atmosphere.js";
+import { createFireworks3D } from "./scene/fireworks3d.js";
 const WorldMapModal = React.lazy(() => import("./ui/WorldMapModal.jsx"));
 const MidnightShow = React.lazy(() => import("./ui/MidnightShow.jsx"));
 import { computeDeterministicGenomeHash } from "./lib/genome.js";
@@ -34,6 +35,7 @@ import {
   fetchAchievements as apiFetchAchievements,
   fetchCityLeaders as apiFetchCityLeaders,
   fetchWorldMap as apiFetchWorldMap,
+  fetchMyCollection as apiFetchMyCollection,
   fetchTelegramStatus as apiFetchTelegramStatus,
   createTelegramLink as apiCreateTelegramLink,
   deleteTelegramLink as apiDeleteTelegramLink,
@@ -1172,6 +1174,7 @@ function generateStandalone3DCapsuleHtml(nftMeta) {
     document.getElementById("play-btn").onclick = () => {
       const AudioCtx = window.AudioContext || window.webkitAudioContext;
       if (!AudioCtx) return;
+      try { if (navigator.audioSession) navigator.audioSession.type = "playback"; } catch (e) {}
       audioCtx = audioCtx || new AudioCtx();
       const ctx = audioCtx;
       if (ctx.state === "suspended") ctx.resume();
@@ -1582,6 +1585,33 @@ const EXTRA_TIMBRES = new Set([
   "organ", "xylophone", "marimba", "kalimba", "harpsichord", "sleighbells", "accordion",
 ]);
 
+// Тихий WAV (0,25 с) для разблокировки аудиосессии старых iOS
+let _silentWav = null;
+function silentWavUrl() {
+  if (_silentWav) return _silentWav;
+  const rate = 8000;
+  const n = rate / 4;
+  const buf = new ArrayBuffer(44 + n);
+  const v = new DataView(buf);
+  const w = (o, str) => [...str].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
+  w(0, "RIFF");
+  v.setUint32(4, 36 + n, true);
+  w(8, "WAVE");
+  w(12, "fmt ");
+  v.setUint32(16, 16, true);
+  v.setUint16(20, 1, true);
+  v.setUint16(22, 1, true);
+  v.setUint32(24, rate, true);
+  v.setUint32(28, rate, true);
+  v.setUint16(32, 1, true);
+  v.setUint16(34, 8, true);
+  w(36, "data");
+  v.setUint32(40, n, true);
+  for (let i = 0; i < n; i++) v.setUint8(44 + i, 128);
+  _silentWav = URL.createObjectURL(new Blob([buf], { type: "audio/wav" }));
+  return _silentWav;
+}
+
 class ChamberOrchestraSynth {
   constructor() {
     this.ctx = null;
@@ -1629,10 +1659,56 @@ class ChamberOrchestraSynth {
   init() {
     if (!this.ctx) {
       const AudioCtx = window.AudioContext || window.webkitAudioContext;
-      if (AudioCtx) this.ctx = new AudioCtx();
+      if (AudioCtx) this.ctx = new AudioCtx({ latencyHint: "interactive" });
     }
-    if (this.ctx && this.ctx.state === "suspended") {
-      this.ctx.resume();
+    // iOS: после звонка/сворачивания контекст бывает в состоянии "interrupted"
+    if (this.ctx && this.ctx.state !== "running" && this.ctx.state !== "closed") {
+      this.ctx.resume().catch(() => {});
+    }
+  }
+
+  /**
+   * Разблокировка звука на iPhone/iPad. Вызывается из первого касания:
+   *  1) audioSession.type = "playback" (Safari 17+) — звук идёт даже при
+   *     включённом беззвучном режиме, как у видео;
+   *  2) для старых iOS — тихий зацикленный <audio>, который переводит
+   *     аудиосессию в режим воспроизведения;
+   *  3) создаём/возобновляем AudioContext и проигрываем пустой буфер — без
+   *     этого Safari держит контекст «на паузе».
+   */
+  unlock() {
+    try {
+      if (navigator.audioSession && navigator.audioSession.type !== "playback") {
+        navigator.audioSession.type = "playback";
+      }
+    } catch {
+      /* старый Safari */
+    }
+    const isIOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+    if (isIOS && !navigator.audioSession && !this.silentEl) {
+      try {
+        this.silentEl = document.createElement("audio");
+        this.silentEl.src = silentWavUrl();
+        this.silentEl.loop = true;
+        this.silentEl.setAttribute("playsinline", "");
+        this.silentEl.volume = 0.01;
+        this.silentEl.play().catch(() => {});
+      } catch {
+        this.silentEl = null;
+      }
+    }
+    this.init();
+    if (this.ctx && !this.unlockedOnce) {
+      try {
+        const b = this.ctx.createBuffer(1, 1, 22050);
+        const src = this.ctx.createBufferSource();
+        src.buffer = b;
+        src.connect(this.ctx.destination);
+        src.start(0);
+        this.unlockedOnce = this.ctx.state === "running";
+      } catch {
+        /* ignore */
+      }
     }
   }
 
@@ -2492,6 +2568,18 @@ class ChamberOrchestraSynth {
 }
 
 const musicBoxSynth = new ChamberOrchestraSynth();
+
+// Первое касание/клик/клавиша разблокирует звук (обязательно для iPhone).
+// Повторяем на каждом жесте — iOS «прерывает» контекст после звонков и фона.
+if (typeof window !== "undefined") {
+  const unlockAudio = () => musicBoxSynth.unlock();
+  ["touchend", "pointerup", "click", "keydown"].forEach((ev) =>
+    window.addEventListener(ev, unlockAudio, { capture: true, passive: true })
+  );
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && musicBoxSynth.ctx) musicBoxSynth.init();
+  });
+}
 
 // ============================================================================
 // 3. ИНТЕРАКТИВНЫЙ 3D-ПРОСМОТРЩИК ХРУСТАЛЬНОГО ШАРА (VOXEL SNOWGLOBE VIEWER)
@@ -3420,7 +3508,7 @@ function GiftWorkshopModal({
         role="dialog"
         aria-modal="true"
         aria-label="Новый шар"
-        className={`${glassPanel} w-full max-w-4xl rounded-t-3xl sm:rounded-3xl overflow-hidden flex flex-col h-[94vh] sm:h-auto sm:max-h-[92vh]`}
+        className={`${glassPanel} w-full max-w-4xl rounded-t-3xl sm:rounded-3xl overflow-hidden flex flex-col wfg-h-94 sm:h-auto sm:max-h-[92vh]`}
       >
         {/* Шапка: заголовок + шаги */}
         <div className="px-4 sm:px-5 pt-4 pb-3 border-b border-white/10">
@@ -3432,7 +3520,7 @@ function GiftWorkshopModal({
                 type="button"
                 onClick={closeWorkshop}
                 aria-label="Закрыть"
-                className="w-9 h-9 rounded-xl bg-white/5 hover:bg-white/10 text-slate-300"
+                className="w-10 h-10 rounded-xl bg-white/10 hover:bg-white/15 text-slate-200 text-lg"
               >
                 ✕
               </button>
@@ -3672,7 +3760,7 @@ function GiftWorkshopModal({
         </div>
 
         {/* Низ: назад / далее / повесить */}
-        <div className="px-4 sm:px-5 py-3 border-t border-white/10 flex items-center gap-2">
+        <div className="px-4 sm:px-5 pt-3 border-t border-white/10 flex items-center gap-2 wfg-safe-b">
           {stepTab > 0 ? (
             <button
               type="button"
@@ -3808,16 +3896,17 @@ function MiracleRingModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-xl flex items-center justify-center p-3">
-      <div className="max-w-lg w-full bg-[#091224] border border-amber-400/50 rounded-3xl p-5 space-y-4 shadow-2xl max-h-[92vh] overflow-y-auto">
-        <div className="flex items-center justify-between">
+    <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-xl flex items-end sm:items-center justify-center sm:p-3" role="dialog" aria-modal="true" aria-label="Кольцо Чудес">
+      <div className="max-w-lg w-full bg-[#091224] border border-amber-400/50 rounded-t-3xl sm:rounded-3xl p-5 space-y-4 shadow-2xl wfg-mh-92 overflow-y-auto wfg-safe-b">
+        <div className="wfg-sticky-head flex items-center justify-between">
           <div className="text-xs uppercase tracking-wider text-amber-400 font-bold">
-            🦉 Стратифицированное Кольцо Чудес 2026
+            🦉 Кольцо Чудес 2026
           </div>
           <button
             type="button"
             onClick={onClose}
-            className="w-8 h-8 rounded-xl bg-slate-800 text-slate-300"
+            aria-label="Закрыть"
+            className="w-10 h-10 rounded-xl bg-slate-800 text-slate-200 text-lg"
           >
             ✕
           </button>
@@ -3845,7 +3934,7 @@ function MiracleRingModal({
                 onClick={() => onOpenNftPassport?.(myGift, null)}
                 className="py-2.5 px-3 rounded-xl bg-sky-500/20 border border-sky-400/50 text-sky-200 font-bold text-xs"
               >
-                💎 NFT-Паспорт моего шара
+                📜 Паспорт моего шара
               </button>
             )}
           </div>
@@ -3919,7 +4008,7 @@ function MiracleRingModal({
                   }
                   className="py-2.5 px-3 rounded-xl bg-sky-500/20 border border-sky-400/50 text-sky-200 font-bold text-xs"
                 >
-                  💎 NFT-Паспорт
+                  📜 Паспорт шара
                 </button>
               </div>
             </div>
@@ -3972,7 +4061,7 @@ function MiracleRingModal({
               onClick={() => onOpenNftPassport?.(myGift, "Санкт-Петербург")}
               className="py-2.5 px-3 rounded-xl bg-sky-500/20 border border-sky-400/50 text-sky-200 font-bold text-xs"
             >
-              💎 NFT-Паспорт
+              📜 Паспорт шара
             </button>
           </div>
         )}
@@ -4011,10 +4100,10 @@ function InviteSheet({ gift, isOwn, onClose }) {
   return (
     <div className="fixed inset-0 z-[58] bg-slate-950/70 backdrop-blur-sm flex items-end sm:items-center justify-center sm:p-4" role="dialog" aria-modal="true" aria-label="Пригласить">
       <button type="button" aria-label="Закрыть" onClick={onClose} className="absolute inset-0" />
-      <div className={`${glassPanel} relative w-full max-w-md rounded-t-3xl sm:rounded-3xl p-4 space-y-3`}>
+      <div className={`${glassPanel} relative w-full max-w-md rounded-t-3xl sm:rounded-3xl p-4 space-y-3 wfg-safe-b wfg-mh-92 overflow-y-auto`}>
         <div className="flex items-center justify-between">
           <div className="font-serif text-lg text-amber-50">{isOwn ? "Позовите друзей зажечь свечу" : "Поделиться шаром"}</div>
-          <button type="button" onClick={onClose} aria-label="Закрыть" className="w-9 h-9 rounded-xl bg-white/5 text-slate-300">✕</button>
+          <button type="button" onClick={onClose} aria-label="Закрыть" className="w-10 h-10 rounded-xl bg-white/10 text-slate-200 text-lg">✕</button>
         </div>
         {!gift.offline && (
           <img
@@ -4088,16 +4177,17 @@ function NftRelicPassportModal({ isOpen, onClose, gift, recipientCity }) {
   const nftMeta = buildNftRelicMetadata(gift, recipientCity);
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur-xl flex items-center justify-center p-3 overflow-y-auto">
-      <div className="max-w-lg w-full bg-[#091224] border border-sky-400/50 rounded-3xl p-5 space-y-4 shadow-2xl my-auto">
-        <div className="flex items-center justify-between">
+    <div className="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur-xl flex items-end sm:items-center justify-center sm:p-3" role="dialog" aria-modal="true" aria-label="Паспорт шара">
+      <div className="max-w-lg w-full bg-[#091224] border border-sky-400/50 rounded-t-3xl sm:rounded-3xl p-5 space-y-4 shadow-2xl wfg-mh-92 overflow-y-auto wfg-safe-b">
+        <div className="wfg-sticky-head flex items-center justify-between">
           <span className="text-xs font-mono text-sky-300 font-bold">
             📜 Паспорт шара · {nftMeta.token_id}
           </span>
           <button
             type="button"
             onClick={onClose}
-            className="w-8 h-8 rounded-xl bg-slate-800 text-slate-300"
+            aria-label="Закрыть"
+            className="w-10 h-10 rounded-xl bg-slate-800 text-slate-200 text-lg"
           >
             ✕
           </button>
@@ -4210,8 +4300,18 @@ function WelcomeGuideModal({ isOpen, onClose, onStart, maxGifts = 3 }) {
       aria-modal="true"
       aria-labelledby="wfg-welcome-title"
     >
-      <div className="w-full max-w-lg max-h-[92vh] overflow-y-auto bg-[#091224] border border-amber-400/50 rounded-3xl shadow-2xl p-5 sm:p-6 space-y-4">
-        <div className="text-center space-y-2">
+      <div className="w-full max-w-lg wfg-mh-92 overflow-y-auto bg-[#091224] border border-amber-400/50 rounded-3xl shadow-2xl p-5 space-y-4">
+        <div className="wfg-sticky-head flex justify-end !pb-0 !bg-transparent">
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Закрыть"
+            className="w-10 h-10 rounded-xl bg-slate-800/90 text-slate-200 text-lg"
+          >
+            ✕
+          </button>
+        </div>
+        <div className="text-center space-y-2 !mt-0">
           <div className="text-4xl">🎄</div>
           <h2 id="wfg-welcome-title" className="font-serif text-2xl sm:text-3xl font-bold text-amber-50">
             Добро пожаловать к Всемирной ёлке
@@ -4283,7 +4383,7 @@ function WelcomeGuideModal({ isOpen, onClose, onStart, maxGifts = 3 }) {
 const glassPanel =
   "bg-[#070d1c]/80 backdrop-blur-xl border border-white/10 shadow-[0_10px_40px_rgba(0,0,0,0.45)]";
 
-function NewLookTopBar({ countdownText, isOfflineMode, onOpenRing, onOpenWorkshop, onOpenMenu }) {
+function NewLookTopBar({ countdownText, isOfflineMode, onOpenRing, onOpenWorkshop, onOpenMenu, onOpenMine }) {
   return (
     <div className="fixed top-3 left-3 right-3 z-30 flex items-start justify-between gap-2 pointer-events-none">
       <button
@@ -4303,9 +4403,20 @@ function NewLookTopBar({ countdownText, isOfflineMode, onOpenRing, onOpenWorksho
         <button
           type="button"
           onClick={onOpenWorkshop}
-          className="px-4 py-2.5 rounded-2xl bg-amber-300 hover:bg-amber-200 text-slate-950 font-semibold text-sm shadow-lg transition"
+          aria-label="Создать шар"
+          className="px-3.5 sm:px-4 py-2.5 rounded-2xl bg-amber-300 hover:bg-amber-200 text-slate-950 font-semibold text-sm shadow-lg transition"
         >
-          Создать шар
+          <span className="sm:hidden">＋ Шар</span>
+          <span className="hidden sm:inline">Создать шар</span>
+        </button>
+        <button
+          type="button"
+          onClick={onOpenMine}
+          aria-label="Мои шары"
+          title="Мои шары"
+          className={`${glassPanel} w-11 h-11 rounded-2xl flex items-center justify-center text-lg`}
+        >
+          🎁
         </button>
         <button
           type="button"
@@ -4408,8 +4519,8 @@ function AdventModal({ today, opened, onOpen, onClose }) {
   return (
     <div className="fixed inset-0 z-[57] bg-slate-950/80 backdrop-blur-md flex items-end sm:items-center justify-center sm:p-4" role="dialog" aria-modal="true" aria-label="Адвент-календарь">
       <button type="button" aria-label="Закрыть" onClick={onClose} className="absolute inset-0" />
-      <div className={`${glassPanel} relative w-full max-w-3xl max-h-[94vh] overflow-y-auto rounded-t-3xl sm:rounded-3xl p-4 sm:p-5 space-y-3`}>
-        <div className="flex items-start justify-between gap-3">
+      <div className={`${glassPanel} relative w-full max-w-3xl wfg-mh-94 overflow-y-auto rounded-t-3xl sm:rounded-3xl p-5 space-y-3 wfg-safe-b`}>
+        <div className="wfg-sticky-head flex items-start justify-between gap-3">
           <div>
             <div className="font-serif text-xl text-amber-50">Адвент-календарь</div>
             <div className="text-xs text-slate-400">
@@ -4420,7 +4531,7 @@ function AdventModal({ today, opened, onOpen, onClose }) {
                 : `Сегодня ${today} декабря. Открыто ${opened.size} из 31${streak > 1 ? ` · серия ${streak} дн. подряд 🔥` : ""}`}
             </div>
           </div>
-          <button type="button" onClick={onClose} aria-label="Закрыть" className="w-9 h-9 shrink-0 rounded-xl bg-white/5 text-slate-300">✕</button>
+          <button type="button" onClick={onClose} aria-label="Закрыть" className="w-10 h-10 shrink-0 rounded-xl bg-white/10 text-slate-200 text-lg">✕</button>
         </div>
         <div className="grid grid-cols-4 sm:grid-cols-7 gap-2">
           {ADVENT_DAYS.map((d) => {
@@ -4467,14 +4578,185 @@ function AdventModal({ today, opened, onOpen, onClose }) {
   );
 }
 
+// Миниатюра фигурки: изометрия вокселей на маленьком canvas (без WebGL)
+function VoxelThumb({ voxels, size = 56 }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    const c = ref.current;
+    if (!c) return;
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    c.width = size * dpr;
+    c.height = size * dpr;
+    const g = c.getContext("2d");
+    g.scale(dpr, dpr);
+    g.clearRect(0, 0, size, size);
+    const grad = g.createRadialGradient(size / 2, size / 2, 2, size / 2, size / 2, size / 2);
+    grad.addColorStop(0, "rgba(186,230,253,0.18)");
+    grad.addColorStop(1, "rgba(186,230,253,0.04)");
+    g.fillStyle = grad;
+    g.beginPath();
+    g.arc(size / 2, size / 2, size / 2 - 1, 0, Math.PI * 2);
+    g.fill();
+    const list = (voxels || []).slice(0, 512);
+    const s = size / 22;
+    const h = s * 1.15;
+    const ox = size / 2;
+    const oy = size * 0.72;
+    const P = (x, y, z) => [ox + (x - z) * s, oy + (x + z) * s * 0.5 - y * h - 8 * s * 0.5];
+    const shade = (hex, k) => {
+      const m = /^#?([0-9a-f]{6})$/i.exec(hex || "");
+      const n = m ? parseInt(m[1], 16) : 0xfbbf24;
+      const r = Math.min(255, ((n >> 16) & 255) * k) | 0;
+      const gg = Math.min(255, ((n >> 8) & 255) * k) | 0;
+      const b = Math.min(255, (n & 255) * k) | 0;
+      return `rgb(${r},${gg},${b})`;
+    };
+    const poly = (pts, fill) => {
+      g.fillStyle = fill;
+      g.beginPath();
+      pts.forEach(([x, y], i) => (i ? g.lineTo(x, y) : g.moveTo(x, y)));
+      g.closePath();
+      g.fill();
+    };
+    [...list]
+      .sort((a, b) => a.x + a.z - (b.x + b.z) || a.y - b.y)
+      .forEach((v) => {
+        const x = v.x - 3.5;
+        const y = v.y;
+        const z = v.z - 3.5;
+        poly([P(x, y + 1, z), P(x + 1, y + 1, z), P(x + 1, y + 1, z + 1), P(x, y + 1, z + 1)], shade(v.color, 1.08));
+        poly([P(x, y + 1, z + 1), P(x + 1, y + 1, z + 1), P(x + 1, y, z + 1), P(x, y, z + 1)], shade(v.color, 0.7));
+        poly([P(x + 1, y + 1, z), P(x + 1, y + 1, z + 1), P(x + 1, y, z + 1), P(x + 1, y, z)], shade(v.color, 0.88));
+      });
+  }, [voxels, size]);
+  return <canvas ref={ref} style={{ width: size, height: size }} className="shrink-0 rounded-full" aria-hidden="true" />;
+}
+
+function dayLabel(day, today) {
+  if (!day) return "";
+  if (day === today) return "сегодня";
+  const d = new Date(`${day}T12:00:00Z`);
+  const t = new Date(`${today}T12:00:00Z`);
+  const diff = Math.round((t - d) / 86400000);
+  if (diff === 1) return "вчера";
+  return d.toLocaleDateString("ru-RU", { day: "numeric", month: "long" });
+}
+
+function MyGiftsSheet({ data, loading, initialTab = "mine", litToday, candlesLeft, onShow, onShare, onEdit, onCreate, onClose }) {
+  const [tab, setTab] = useState(initialTab);
+  const mine = data?.mine || [];
+  const lit = data?.lit || [];
+  const list = tab === "mine" ? mine : lit;
+  const tabBtn = (id, label, n) => (
+    <button
+      type="button"
+      onClick={() => setTab(id)}
+      aria-pressed={tab === id}
+      className={`flex-1 py-2 rounded-xl text-sm ${tab === id ? "bg-white/15 text-white font-semibold" : "text-slate-400"}`}
+    >
+      {label}
+      {n > 0 && <span className="ml-1.5 text-xs opacity-70">{n}</span>}
+    </button>
+  );
+  return (
+    <div className="fixed inset-0 z-[57] bg-slate-950/70 backdrop-blur-sm flex items-end sm:items-center justify-center sm:p-4" role="dialog" aria-modal="true" aria-label="Мои шары">
+      <button type="button" aria-label="Закрыть фон" onClick={onClose} className="absolute inset-0" />
+      <div className={`${glassPanel} relative w-full max-w-lg wfg-mh-88 flex flex-col rounded-t-3xl sm:rounded-3xl overflow-hidden`}>
+        <div className="p-4 pb-3 border-b border-white/10 space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="font-serif text-xl text-amber-50">Мои шары</div>
+            <button type="button" onClick={onClose} aria-label="Закрыть" className="w-10 h-10 rounded-xl bg-white/10 text-slate-200 text-lg">
+              ✕
+            </button>
+          </div>
+          <div className="flex gap-1 p-1 rounded-2xl bg-white/5">
+            {tabBtn("mine", "🎄 Мои", mine.length)}
+            {tabBtn("lit", "🕯 Я зажёг", lit.length)}
+          </div>
+        </div>
+        <div className="p-3 overflow-y-auto flex-1 space-y-2">
+          {loading && !data && <div className="text-sm text-slate-400 p-3">Собираем шары…</div>}
+          {!loading && list.length === 0 && (
+            <div className="text-center p-6 space-y-3">
+              <div className="text-4xl">{tab === "mine" ? "🎁" : "🕯"}</div>
+              <div className="text-sm text-slate-300">
+                {tab === "mine"
+                  ? "Вы ещё не повесили ни одного шара."
+                  : "Вы ещё не зажигали свечей. Найдите шар, который тронул, — и поддержите мастера."}
+              </div>
+              {tab === "mine" && (
+                <button type="button" onClick={onCreate} className="px-5 py-2.5 rounded-xl bg-amber-300 text-slate-950 font-semibold text-sm">
+                  Создать шар
+                </button>
+              )}
+            </div>
+          )}
+          {list.map((g) => {
+            const card = g.card_preview || {};
+            return (
+              <div key={g.id} className="flex items-center gap-3 rounded-2xl bg-white/5 border border-white/10 p-2.5">
+                <button type="button" onClick={() => onShow(g.id)} className="shrink-0" aria-label={`Показать «${card.teaser_tag}» на Ёлке`}>
+                  <VoxelThumb voxels={g.snowglobe?.voxels} />
+                </button>
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm text-amber-50 truncate font-serif">«{card.teaser_tag}»</div>
+                  <div className="text-[11px] text-slate-400 truncate">
+                    {tab === "lit" ? `${card.author_display_name} · ${card.city}` : card.city}
+                  </div>
+                  <div className="text-[11px] text-slate-300 mt-0.5">
+                    #{g.rank} · 🕯 {g.candles_count}
+                    {tab === "lit" &&
+                      ` · ваших ${g.my_candles} · ${
+                        g.last_lit_day === data?.today || litToday?.has(g.id) ? "горит сегодня" : dayLabel(g.last_lit_day, data?.today)
+                      }`}
+                    {tab === "mine" && g.is_quarantined && " · на проверке"}
+                  </div>
+                </div>
+                <div className="flex flex-col gap-1 shrink-0">
+                  <button type="button" onClick={() => onShow(g.id)} className="px-3 py-1.5 rounded-lg bg-amber-300 text-slate-950 text-xs font-semibold">
+                    Показать
+                  </button>
+                  {tab === "mine" ? (
+                    <div className="flex gap-1">
+                      <button type="button" onClick={() => onShare(g)} aria-label="Поделиться" className="flex-1 px-2 py-1.5 rounded-lg bg-white/10 text-xs text-slate-200">
+                        ↗
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onEdit(g.id)}
+                        aria-label="Переделать"
+                        title={g.can_edit ? "Переделать шар" : "Править можно раз в несколько дней"}
+                        className={`flex-1 px-2 py-1.5 rounded-lg text-xs ${g.can_edit ? "bg-white/10 text-slate-200" : "bg-white/5 text-slate-500"}`}
+                      >
+                        ✏️
+                      </button>
+                    </div>
+                  ) : (
+                    <button type="button" onClick={() => onShare(g)} className="px-3 py-1.5 rounded-lg bg-white/10 text-xs text-slate-200">
+                      ↗ Позвать
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+          {tab === "lit" && lit.length > 0 && candlesLeft != null && (
+            <div className="text-[11px] text-slate-500 text-center pt-1">Свечей на сегодня: {candlesLeft}. Каждый день — новые.</div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function TelegramSheet({ status, hasGift, onConnect, onDisconnect, onClose }) {
   return (
     <div className="fixed inset-0 z-[57] bg-slate-950/70 backdrop-blur-sm flex items-end sm:items-center justify-center sm:p-4" role="dialog" aria-modal="true" aria-label="Уведомления в Telegram">
       <button type="button" aria-label="Закрыть" onClick={onClose} className="absolute inset-0" />
-      <div className={`${glassPanel} relative w-full max-w-md rounded-t-3xl sm:rounded-3xl p-5 space-y-3`}>
+      <div className={`${glassPanel} relative w-full max-w-md rounded-t-3xl sm:rounded-3xl p-5 space-y-3 wfg-safe-b wfg-mh-92 overflow-y-auto`}>
         <div className="flex items-center justify-between">
           <div className="font-serif text-lg text-amber-50">🔔 Уведомления в Telegram</div>
-          <button type="button" onClick={onClose} aria-label="Закрыть" className="w-9 h-9 rounded-xl bg-white/5 text-slate-300">✕</button>
+          <button type="button" onClick={onClose} aria-label="Закрыть" className="w-10 h-10 rounded-xl bg-white/10 text-slate-200 text-lg">✕</button>
         </div>
         <ul className="text-sm text-slate-300 space-y-1.5">
           <li>🕯 «Ваш шар зажгли 5 раз»</li>
@@ -4510,15 +4792,15 @@ function AchievementsModal({ data, onClose }) {
   return (
     <div className="fixed inset-0 z-[57] bg-slate-950/80 backdrop-blur-md flex items-end sm:items-center justify-center sm:p-4" role="dialog" aria-modal="true" aria-label="Ачивки мастера">
       <button type="button" aria-label="Закрыть" onClick={onClose} className="absolute inset-0" />
-      <div className={`${glassPanel} relative w-full max-w-2xl max-h-[94vh] overflow-y-auto rounded-t-3xl sm:rounded-3xl p-4 sm:p-5 space-y-3`}>
-        <div className="flex items-center justify-between">
+      <div className={`${glassPanel} relative w-full max-w-2xl wfg-mh-94 overflow-y-auto rounded-t-3xl sm:rounded-3xl p-5 space-y-3 wfg-safe-b`}>
+        <div className="wfg-sticky-head flex items-center justify-between">
           <div>
             <div className="font-serif text-xl text-amber-50">Ачивки мастера</div>
             <div className="text-xs text-slate-400">
               Получено {data?.unlocked ?? 0} из {data?.total ?? items.length}
             </div>
           </div>
-          <button type="button" onClick={onClose} aria-label="Закрыть" className="w-9 h-9 rounded-xl bg-white/5 text-slate-300">✕</button>
+          <button type="button" onClick={onClose} aria-label="Закрыть" className="w-10 h-10 rounded-xl bg-white/10 text-slate-200 text-lg">✕</button>
         </div>
         {!data && <div className="text-sm text-slate-400">Считаем огоньки…</div>}
         <div className="grid sm:grid-cols-2 gap-2">
@@ -4585,19 +4867,31 @@ function NewLookMenu({
     <div className="fixed inset-0 z-50" role="dialog" aria-modal="true" aria-label="Меню">
       <button type="button" aria-label="Закрыть меню" onClick={onClose} className="absolute inset-0 bg-black/40" />
       <div
-        className={`${glassPanel} absolute right-0 top-0 bottom-0 w-[min(360px,92vw)] rounded-l-3xl p-5 overflow-y-auto space-y-6`}
+        className={`${glassPanel} absolute right-0 top-0 bottom-0 w-[min(360px,92vw)] rounded-l-3xl flex flex-col overflow-hidden`}
       >
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between px-5 pb-3 border-b border-white/10" style={{ paddingTop: "max(1.25rem, env(safe-area-inset-top))" }}>
           <div className="font-serif text-xl text-amber-50">Ёлка</div>
           <button
             type="button"
             onClick={onClose}
             aria-label="Закрыть"
-            className="w-9 h-9 rounded-xl bg-white/5 text-slate-300 hover:bg-white/10"
+            className="w-10 h-10 rounded-xl bg-white/10 text-slate-200 hover:bg-white/15 text-lg"
           >
             ✕
           </button>
         </div>
+        <div className="flex-1 overflow-y-auto overscroll-contain px-5 pt-4 space-y-6 wfg-safe-b">
+
+        <MenuSection title="Мои шары">
+          <div className="grid grid-cols-2 gap-1.5">
+            <button type="button" onClick={() => fest.onMine?.("mine")} className={chip(false)}>
+              🎄 Мои шары
+            </button>
+            <button type="button" onClick={() => fest.onMine?.("lit")} className={chip(false)}>
+              🕯 Я зажёг
+            </button>
+          </div>
+        </MenuSection>
 
         <MenuSection title="Праздник">
           <div className="grid grid-cols-2 gap-1.5">
@@ -4690,15 +4984,11 @@ function NewLookMenu({
         </MenuSection>
 
         <MenuSection title="Справка">
-          <div className="grid grid-cols-2 gap-1.5">
-            <button type="button" onClick={onOpenGuide} className={chip(false)}>
-              Как это работает
-            </button>
-            <a href="/?look=classic" className={`${chip(false)} text-center`}>
-              Прежний облик
-            </a>
-          </div>
+          <button type="button" onClick={onOpenGuide} className={`${chip(false)} w-full`}>
+            Как это работает
+          </button>
         </MenuSection>
+        </div>
       </div>
     </div>
   );
@@ -4981,6 +5271,8 @@ export default function App() {
   };
   const startMidnightShow = useCallback((mode) => {
     musicBoxSynth.init();
+    // отходим от Ёлки, чтобы небо с салютом было в кадре
+    zoomTargetRef.current = ZOOM_MAX;
     setMidnightShow({ mode, key: Date.now() });
   }, []);
   const [reportedGiftIds, setReportedGiftIds] = useState(() => new Set());
@@ -4991,6 +5283,7 @@ export default function App() {
   const toastTimerRef = useRef(null);
   const zoomTargetRef = useRef(1);
   const firApiRef = useRef(null);
+  const fireworksRef = useRef(null);
   const lastHangersRef = useRef([]);
   const [isWelcomeOpen, setIsWelcomeOpen] = useState(() => {
     try {
@@ -5223,7 +5516,10 @@ export default function App() {
     const target = serverUnlockAtMs ?? UNLOCK_TARGET_MS;
     const msLeft = target - (Date.now() + clockOffsetMs) - 10_500;
     if (msLeft < -5_000 || msLeft > 2 ** 31 - 1) return undefined;
-    const t = window.setTimeout(() => setMidnightShow({ mode: "live", key: target }), Math.max(0, msLeft));
+    const t = window.setTimeout(() => {
+      zoomTargetRef.current = ZOOM_MAX;
+      setMidnightShow({ mode: "live", key: target });
+    }, Math.max(0, msLeft));
     return () => window.clearTimeout(t);
   }, [serverUnlockAtMs, clockOffsetMs]);
 
@@ -6615,6 +6911,7 @@ export default function App() {
     let fir = null;
     let clearing = null;
     let atmosphere = null;
+    let fireworks3d = null;
     let lastElapsed = 0;
     let tiltPasses = [];
     // Адаптивное качество: замеряем FPS после прогрева и упрощаем сцену на слабых устройствах
@@ -6681,6 +6978,15 @@ export default function App() {
       });
       atmosphereRef.current = atmosphere;
       atmosphere.set(timeOfDayRef.current, newWeatherRef.current);
+
+      // Объёмный салют (полночь, репетиция, окошко 31 декабря)
+      fireworks3d = createFireworks3D({
+        scene,
+        camera,
+        isMobile: isMobileGpu,
+        getAudioContext: () => musicBoxSynth.ctx,
+      });
+      fireworksRef.current = fireworks3d;
 
       // Настоящая пятиконечная звезда вместо двух жёлтых ромбов
       starCoreA.visible = false;
@@ -6907,6 +7213,7 @@ export default function App() {
       if (fir) {
         fir.update(elapsed);
         atmosphere?.update(Math.min(0.1, elapsed - lastElapsed), elapsed);
+        fireworks3d?.update(Math.min(0.1, elapsed - lastElapsed));
         lastElapsed = elapsed;
         if (!perf.done) {
           if (elapsed > 2.5) {
@@ -7148,6 +7455,8 @@ export default function App() {
       if (atmosphere) {
         atmosphere.dispose();
         atmosphereRef.current = null;
+        fireworks3d?.dispose();
+        fireworksRef.current = null;
       }
       window.removeEventListener("mousemove", onMouseMove);
       window.removeEventListener("mouseup", onMouseUp);
@@ -7406,6 +7715,18 @@ export default function App() {
 
   const [editingGift, setEditingGift] = useState(null);
   const [inviteGift, setInviteGift] = useState(null);
+  const [myGiftsSheet, setMyGiftsSheet] = useState(null); // null | "mine" | "lit"
+  const [collection, setCollection] = useState(null);
+  const [collectionLoading, setCollectionLoading] = useState(false);
+  const openMyGifts = (tab) => {
+    setIsMenuOpen(false);
+    setMyGiftsSheet(tab);
+    setCollectionLoading(true);
+    apiFetchMyCollection()
+      .then(setCollection)
+      .catch(() => showToast("Нет связи с Ёлкой — список не загрузился.", "warn"))
+      .finally(() => setCollectionLoading(false));
+  };
 
   const handleOpenEdit = async (giftId) => {
     try {
@@ -7614,6 +7935,7 @@ export default function App() {
           onOpenRing={() => setIsRingModalOpen(true)}
           onOpenWorkshop={() => setIsWorkshopOpen(true)}
           onOpenMenu={() => setIsMenuOpen(true)}
+          onOpenMine={() => openMyGifts("mine")}
         />
       )}
       <NewLookMenu
@@ -7654,6 +7976,7 @@ export default function App() {
         extraWeather={advent.weather}
         extraGarlands={advent.garlands}
         fest={{
+          onMine: openMyGifts,
           onAdvent: () => {
             setIsMenuOpen(false);
             setIsAdventOpen(true);
@@ -7738,7 +8061,7 @@ export default function App() {
               className="bg-[#0b1528]/85 backdrop-blur-xl border border-amber-400/40 rounded-2xl px-2.5 sm:px-3.5 py-1.5 sm:py-2 text-right shadow-2xl whitespace-nowrap"
             >
               <div className="text-[9px] sm:text-[10px] uppercase tracking-wider text-amber-400 font-semibold">
-                🦉 Кольцо & NFT
+                🦉 Кольцо Чудес
               </div>
               <div className="text-[11px] sm:text-xs font-mono font-bold text-amber-50">
                 ⏳ {countdownText}
@@ -7968,7 +8291,7 @@ export default function App() {
       )}
 
       {selectedGift && !LOOK_NEW && (
-        <div className="fixed bottom-2.5 right-2.5 left-2.5 md:left-auto md:w-[450px] max-h-[75vh] overflow-y-auto bg-[#0b1528]/92 backdrop-blur-xl border border-amber-400/45 rounded-2xl sm:rounded-3xl p-3 sm:p-4 shadow-2xl z-30">
+        <div className="fixed bottom-2.5 right-2.5 left-2.5 md:left-auto md:w-[450px] wfg-mh-75 overflow-y-auto bg-[#0b1528]/92 backdrop-blur-xl border border-amber-400/45 rounded-2xl sm:rounded-3xl p-3 sm:p-4 shadow-2xl z-30">
           <div className="flex justify-between items-center gap-2">
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-1.5">
@@ -8069,7 +8392,7 @@ export default function App() {
                 }
                 className="w-full py-1.5 px-3 rounded-xl bg-gradient-to-r from-sky-500/25 to-indigo-500/25 hover:from-sky-500/35 hover:to-indigo-500/35 border border-sky-400/50 text-sky-200 font-semibold text-xs transition"
               >
-                💎 NFT-Паспорт & Скачать 3D-Капсулу
+                📜 Паспорт шара и 3D-открытка
               </button>
             </div>
           </div>
@@ -8171,16 +8494,17 @@ export default function App() {
       )}
 
       {isInspectModalOpen && selectedGift && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#030712]/90 backdrop-blur-xl p-4">
-          <div className="bg-[#091224] border border-amber-400/50 rounded-3xl p-6 max-w-md w-full flex flex-col items-center space-y-4 shadow-2xl">
-            <div className="w-full flex items-center justify-between">
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-[#030712]/90 backdrop-blur-xl sm:p-4" role="dialog" aria-modal="true" aria-label="Рассмотреть шар">
+          <div className="bg-[#091224] border border-amber-400/50 rounded-t-3xl sm:rounded-3xl p-5 max-w-md w-full flex flex-col items-center space-y-4 shadow-2xl wfg-mh-92 overflow-y-auto wfg-safe-b">
+            <div className="wfg-sticky-head w-full flex items-center justify-between self-stretch">
               <span className="text-xs uppercase tracking-widest text-amber-400 font-semibold">
-                🤲 Витрина Ручного Творчества
+                🤲 Рассмотреть шар
               </span>
               <button
                 type="button"
                 onClick={() => setIsInspectModalOpen(false)}
-                className="w-8 h-8 rounded-lg bg-slate-800 text-slate-200"
+                aria-label="Закрыть"
+                className="w-10 h-10 rounded-xl bg-slate-800 text-slate-200 text-lg"
               >
                 ✕
               </button>
@@ -8207,7 +8531,7 @@ export default function App() {
               }}
               className="w-full py-2.5 px-4 rounded-xl bg-amber-400 text-slate-950 font-bold text-xs"
             >
-              💎 Открыть NFT-Паспорт и скачать 3D-Капсулу
+              📜 Паспорт шара и 3D-открытка
             </button>
           </div>
         </div>
@@ -8236,6 +8560,7 @@ export default function App() {
             startAtMs={serverUnlockAtMs ?? UNLOCK_TARGET_MS}
             nowOffsetMs={clockOffsetMs}
             onOwl={() => musicBoxSynth.playOwlChime()}
+            fireworks3d={fireworksRef.current}
             onDone={(mode) => {
               setMidnightShow(null);
               if (mode === "live") setIsRingModalOpen(true);
@@ -8285,6 +8610,30 @@ export default function App() {
             onClose={() => setIsMapOpen(false)}
           />
         </React.Suspense>
+      )}
+
+      {myGiftsSheet && (
+        <MyGiftsSheet
+          key={myGiftsSheet}
+          data={collection}
+          loading={collectionLoading}
+          initialTab={myGiftsSheet}
+          litToday={litGiftIds}
+          candlesLeft={candleQuota.remaining}
+          onClose={() => setMyGiftsSheet(null)}
+          onCreate={() => {
+            setMyGiftsSheet(null);
+            setIsWorkshopOpen(true);
+          }}
+          onShow={(id) => {
+            if (focusGiftById(id)) setMyGiftsSheet(null);
+          }}
+          onShare={(g) => setInviteGift(giftNodeFromDTO(g))}
+          onEdit={(id) => {
+            setMyGiftsSheet(null);
+            handleOpenEdit(id);
+          }}
+        />
       )}
 
       {inviteGift && (
@@ -8347,7 +8696,7 @@ export default function App() {
         }}
       />
 
-      {/* Модальное окно Криптографического NFT-Паспорта и 3D-Капсулы */}
+      {/* Паспорт шара и 3D-открытка */}
       <NftRelicPassportModal
         isOpen={nftModalState.isOpen}
         onClose={() =>

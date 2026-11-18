@@ -24,7 +24,7 @@ from app.services.seeder import seed_initial_gifts
 
 logger = logging.getLogger("uvicorn.error")
 
-API_VERSION = "17.0.0"
+API_VERSION = "17.1.0"
 
 
 async def _rotate_and_check_contacts() -> None:
@@ -166,9 +166,31 @@ app.include_router(world.router)
 app.include_router(telegram.router)
 
 
+def _db_mode() -> str:
+    from app.database import DATABASE_URL
+
+    if DATABASE_URL.startswith("sqlite"):
+        return "sqlite"
+    host = DATABASE_URL.split("@")[-1].split("/")[0].split(":")[0]
+    return "postgresql-embedded" if host in ("127.0.0.1", "localhost") else "postgresql-external"
+
+
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "version": API_VERSION}
+    """Живость + какая БД подключена (без адресов и паролей) и отвечает ли она."""
+    from sqlalchemy import func, select, text
+
+    from app.models import Gift
+
+    db = {"mode": _db_mode(), "ok": False}
+    try:
+        async with AsyncSessionLocal() as session:
+            await session.execute(text("SELECT 1"))
+            db["gifts"] = (await session.execute(select(func.count(Gift.id)))).scalar_one()
+            db["ok"] = True
+    except Exception:
+        logger.exception("[Health] БД не отвечает")
+    return {"status": "ok" if db["ok"] else "degraded", "version": API_VERSION, "db": db}
 
 
 @app.api_route("/api/{rest:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"], include_in_schema=False)
