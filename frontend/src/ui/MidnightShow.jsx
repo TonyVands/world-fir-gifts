@@ -4,6 +4,7 @@
 // "fireworks" (просто салют — окошко 31 декабря адвент-календаря).
 // ============================================================================
 import React, { useEffect, useRef, useState } from "react";
+import { CHIMES_LEAD_S, scheduleKremlinChimes, startPeal } from "../lib/bells.js";
 
 const COLORS = ["#ffd166", "#ff6b6b", "#4ade80", "#60a5fa", "#f472b6", "#fde68a", "#a78bfa", "#ffffff"];
 
@@ -174,25 +175,63 @@ function Owl() {
   );
 }
 
-export default function MidnightShow({ mode, startAtMs, nowOffsetMs = 0, onOwl, onDone, fireworks3d = null }) {
+export default function MidnightShow({
+  mode,
+  startAtMs,
+  nowOffsetMs = 0,
+  onOwl,
+  onDone,
+  fireworks3d = null,
+  getAudioContext = null,
+}) {
   const canvasRef = useRef(null);
   const [phase, setPhase] = useState(mode === "fireworks" ? "celebrate" : "countdown");
-  const [count, setCount] = useState(10);
+  const [count, setCount] = useState(null); // секунды до полуночи (показываем последние 10)
+  const [strike, setStrike] = useState(0); // какой удар курантов прозвучал
   const [owlFlying, setOwlFlying] = useState(false);
+  // для репетиции полночь — через время боя курантов от «сейчас»
+  const targetRef = useRef(mode === "live" && startAtMs ? startAtMs : Date.now() + CHIMES_LEAD_S * 1000);
 
-  // отсчёт до полуночи (для репетиции — 10 секунд от «сейчас»)
+  // Бой курантов: 12-й удар ровно в полночь (по часам сервера)
+  useEffect(() => {
+    if (mode === "fireworks") return undefined;
+    const ctx = getAudioContext?.();
+    if (!ctx) return undefined;
+    ctx.resume?.().catch(() => {});
+    const msLeft = targetRef.current - (Date.now() + (mode === "live" ? nowOffsetMs : 0));
+    const strikes = scheduleKremlinChimes(ctx, ctx.currentTime + msLeft / 1000);
+    // счётчик ударов на экране
+    const id = window.setInterval(() => {
+      const n = strikes.filter((t) => t <= ctx.currentTime + 0.02).length;
+      setStrike(n);
+    }, 120);
+    return () => window.clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // отсчёт до полуночи
   useEffect(() => {
     if (phase !== "countdown") return undefined;
-    const target = mode === "live" && startAtMs ? startAtMs : Date.now() + 10_000;
+    const target = targetRef.current;
     const id = window.setInterval(() => {
       const left = Math.ceil((target - (Date.now() + (mode === "live" ? nowOffsetMs : 0))) / 1000);
       if (left <= 0) {
         window.clearInterval(id);
         setPhase("celebrate");
-      } else setCount(Math.min(10, left));
+      } else setCount(left);
     }, 100);
     return () => window.clearInterval(id);
-  }, [phase, mode, startAtMs, nowOffsetMs]);
+  }, [phase, mode, nowOffsetMs]);
+
+  // Праздничный перезвон колоколов вместе с салютом
+  useEffect(() => {
+    if (phase !== "celebrate") return undefined;
+    const ctx = getAudioContext?.();
+    // перезвон доигрывает сам, даже когда надпись уже исчезла
+    if (ctx) startPeal(ctx, mode === "fireworks" ? 12 : 22);
+    return undefined;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase === "celebrate"]);
 
   useFireworks(canvasRef, phase === "celebrate" || phase === "owl", mode === "fireworks" ? 0.9 : 1.3, fireworks3d);
 
@@ -226,10 +265,22 @@ export default function MidnightShow({ mode, startAtMs, nowOffsetMs = 0, onOwl, 
         @keyframes pop { 0% { transform: scale(1.6); opacity: 0 } 30% { opacity: 1 } 100% { transform: scale(1); opacity: 1 } }
       `}</style>
       <canvas ref={canvasRef} className="absolute inset-0 w-full h-full" />
-      {phase === "countdown" && (
+      {phase === "countdown" && count != null && count > 10 && (
+        <div className="absolute inset-x-0 top-[16vh] flex flex-col items-center text-center px-4">
+          <div className="rounded-2xl bg-slate-950/55 backdrop-blur-md border border-amber-200/20 px-5 py-3">
+            <div className="text-sm uppercase tracking-[0.25em] text-amber-100/90">
+              {strike > 0 ? "Бьют куранты" : "Звучат куранты"}
+            </div>
+            <div className="mt-1 font-serif text-3xl text-amber-50">
+              {strike > 0 ? `${strike} из 12` : `до Нового года ${count} с`}
+            </div>
+          </div>
+        </div>
+      )}
+      {phase === "countdown" && count != null && count <= 10 && (
         <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/30">
           <div className="text-sm uppercase tracking-[0.3em] text-amber-100/80 mb-2">
-            {mode === "rehearsal" ? "Репетиция полуночи" : "До Нового года"}
+            {strike > 0 ? `Удар ${strike} из 12` : "До Нового года"}
           </div>
           <div key={count} className="font-serif text-[28vw] sm:text-[180px] leading-none text-amber-50 drop-shadow-[0_0_40px_rgba(251,191,36,0.7)]" style={{ animation: "pop .9s ease-out" }}>
             {count}

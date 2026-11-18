@@ -1,7 +1,7 @@
 {
   "name": "world-fir-gifts-frontend",
   "private": true,
-  "version": "17.1.0",
+  "version": "17.2.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,13 +10,10 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "d3-geo": "^3.1.2",
     "lucide-react": "^0.400.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "three": "^0.165.0",
-    "topojson-client": "^3.1.0",
-    "world-atlas": "^2.0.2"
+    "three": "^0.165.0"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.1",

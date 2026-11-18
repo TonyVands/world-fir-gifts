@@ -11,7 +11,7 @@ import { createRealisticFir, createCapLoopGeometry } from "./scene/realisticFir.
 import { createClearing } from "./scene/clearing.js";
 import { TIME_OF_DAY, WEATHER_PRESETS, createAtmosphereController } from "./scene/atmosphere.js";
 import { createFireworks3D } from "./scene/fireworks3d.js";
-const WorldMapModal = React.lazy(() => import("./ui/WorldMapModal.jsx"));
+import { CHIMES_LEAD_S } from "./lib/bells.js";
 const MidnightShow = React.lazy(() => import("./ui/MidnightShow.jsx"));
 import { computeDeterministicGenomeHash } from "./lib/genome.js";
 import { inspectVoxelGeometrySafety } from "./lib/voxelSafety.js";
@@ -34,7 +34,6 @@ import {
   fetchCandleStatus as apiFetchCandleStatus,
   fetchAchievements as apiFetchAchievements,
   fetchCityLeaders as apiFetchCityLeaders,
-  fetchWorldMap as apiFetchWorldMap,
   fetchMyCollection as apiFetchMyCollection,
   fetchTelegramStatus as apiFetchTelegramStatus,
   createTelegramLink as apiCreateTelegramLink,
@@ -4452,7 +4451,7 @@ function formatResetTime(iso) {
   return h > 0 ? `через ${h} ч ${m} мин` : `через ${m} мин`;
 }
 
-function CandleDaySection({ quota, leaders, onShowGift }) {
+function CandleDaySection({ quota, leaders, cityInfo, onShowGift }) {
   const limit = quota?.limit || 3;
   const remaining = quota?.remaining ?? limit;
   const winner = leaders?.yesterday_winner;
@@ -4483,6 +4482,21 @@ function CandleDaySection({ quota, leaders, onShowGift }) {
           <div className="font-serif text-amber-50 truncate">«{winner.teaser_tag}»</div>
           <div className="text-[11px] text-slate-400 truncate">
             {winner.author_display_name} · {winner.city} · 🕯 {winner.candles} за сутки
+          </div>
+        </button>
+      )}
+      {cityInfo?.city && (
+        <button
+          type="button"
+          disabled={!cityInfo.today}
+          onClick={() => cityInfo.today && onShowGift(cityInfo.today.gift_id)}
+          className="w-full text-left rounded-2xl bg-white/5 border border-white/10 p-3 hover:bg-white/10 disabled:hover:bg-white/5"
+        >
+          <div className="text-[11px] uppercase tracking-[0.12em] text-slate-400">🏙 Шар дня · {cityInfo.city}</div>
+          <div className="text-xs text-slate-200 truncate mt-0.5">
+            {cityInfo.today
+              ? `«${cityInfo.today.teaser_tag}» · 🕯 ${cityInfo.today.candles} сегодня`
+              : "Сегодня в вашем городе ещё не зажигали свечей"}
           </div>
         </button>
       )}
@@ -4575,6 +4589,18 @@ function AdventModal({ today, opened, onOpen, onClose }) {
         </div>
       </div>
     </div>
+  );
+}
+
+// Значок «Поделиться»: три связанные точки — привычный по Android и мессенджерам
+function ShareIcon({ className = "w-5 h-5" }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+      <circle cx="18" cy="5" r="2.6" fill="currentColor" stroke="none" />
+      <circle cx="6" cy="12" r="2.6" fill="currentColor" stroke="none" />
+      <circle cx="18" cy="19" r="2.6" fill="currentColor" stroke="none" />
+      <path d="M8.3 10.8 15.7 6.4M8.3 13.2l7.4 4.4" />
+    </svg>
   );
 }
 
@@ -4718,8 +4744,8 @@ function MyGiftsSheet({ data, loading, initialTab = "mine", litToday, candlesLef
                   </button>
                   {tab === "mine" ? (
                     <div className="flex gap-1">
-                      <button type="button" onClick={() => onShare(g)} aria-label="Поделиться" className="flex-1 px-2 py-1.5 rounded-lg bg-white/10 text-xs text-slate-200">
-                        ↗
+                      <button type="button" onClick={() => onShare(g)} aria-label="Поделиться" className="flex-1 px-2 py-1.5 rounded-lg bg-white/10 text-slate-200 flex items-center justify-center">
+                        <ShareIcon className="w-4 h-4" />
                       </button>
                       <button
                         type="button"
@@ -4732,8 +4758,8 @@ function MyGiftsSheet({ data, loading, initialTab = "mine", litToday, candlesLef
                       </button>
                     </div>
                   ) : (
-                    <button type="button" onClick={() => onShare(g)} className="px-3 py-1.5 rounded-lg bg-white/10 text-xs text-slate-200">
-                      ↗ Позвать
+                    <button type="button" onClick={() => onShare(g)} className="px-3 py-1.5 rounded-lg bg-white/10 text-xs text-slate-200 flex items-center gap-1.5">
+                      <ShareIcon className="w-3.5 h-3.5" /> Позвать
                     </button>
                   )}
                 </div>
@@ -4899,39 +4925,22 @@ function NewLookMenu({
               📅 Адвент
               {fest.adventBadge && <span className="absolute top-1 right-1.5 w-2 h-2 rounded-full bg-rose-400" />}
             </button>
-            <button type="button" onClick={fest.onMap} className={chip(false)}>
-              🗺 Карта мира
-            </button>
             <button type="button" onClick={fest.onAchievements} className={chip(false)}>
               🏅 Ачивки{fest.achievementsLabel ? ` ${fest.achievementsLabel}` : ""}
             </button>
-            <button type="button" onClick={fest.onTelegram} className={chip(Boolean(fest.telegramLinked))}>
+            <button type="button" onClick={fest.onTelegram} className={`${chip(Boolean(fest.telegramLinked))} col-span-2`}>
               {fest.telegramLinked ? "🔔 Telegram ✓" : "🔔 Уведомления"}
             </button>
-            <button type="button" onClick={fest.onRehearsal} className={`${chip(false)} col-span-2`}>
-              {fest.fireworksUnlocked ? "🎆 Запустить салют" : "🎆 Репетиция полуночи"}
-            </button>
+            {fest.fireworksUnlocked && (
+              <button type="button" onClick={fest.onRehearsal} className={`${chip(false)} col-span-2`}>
+                🎆 Запустить салют
+              </button>
+            )}
           </div>
         </MenuSection>
 
         <MenuSection title="Свечи дня">
-          <CandleDaySection quota={candleQuota} leaders={candleLeaders} onShowGift={onShowGift} />
-        </MenuSection>
-
-        <MenuSection title="Гирлянда">
-          <div className={`grid ${extraGarlands.includes("ice") ? "grid-cols-4" : "grid-cols-3"} gap-1.5`}>
-            {[
-              { id: "warm", label: "Тёплая", icon: "🟡" },
-              { id: "retro", label: "Цветная", icon: "🌈" },
-              { id: "both", label: "Обе", icon: "✨" },
-              ...(extraGarlands.includes("ice") ? [{ id: "ice", label: "Ледяная", icon: "🧊" }] : []),
-            ].map((g) => (
-              <button key={g.id} type="button" onClick={() => onGarlandMode(g.id)} className={chip(garlandMode === g.id)}>
-                <div className="text-base leading-none mb-1">{g.icon}</div>
-                {g.label}
-              </button>
-            ))}
-          </div>
+          <CandleDaySection quota={candleQuota} leaders={candleLeaders} cityInfo={fest.cityInfo} onShowGift={onShowGift} />
         </MenuSection>
 
         <MenuSection title="Время суток">
@@ -5096,8 +5105,8 @@ function CompactGiftCard({
             : "Зажечь свечу"}
         </button>
         {!gift.offline && onShare && (
-          <button type="button" onClick={onShare} aria-label="Поделиться" title="Поделиться" className={iconBtn + " h-auto w-11"}>
-            ↗
+          <button type="button" onClick={onShare} aria-label="Поделиться" title="Поделиться" className={iconBtn + " h-auto w-11 flex items-center justify-center"}>
+            <ShareIcon />
           </button>
         )}
         <button
@@ -5215,22 +5224,12 @@ export default function App() {
   });
 
   const [isWorkshopOpen, setIsWorkshopOpen] = useState(false);
-  const [garlandMode, setGarlandMode] = useState(() => {
-    try {
-      return localStorage.getItem("wfg_garland") || "both";
-    } catch {
-      return "both";
-    }
-  });
+  // Обе гирлянды горят всегда (выбор гирлянды из меню убран)
+  const [garlandMode, setGarlandMode] = useState("both");
   const garlandModeRef = useRef(garlandMode);
   useEffect(() => {
     garlandModeRef.current = garlandMode;
     firApiRef.current?.setGarlandMode?.(garlandMode);
-    try {
-      localStorage.setItem("wfg_garland", garlandMode);
-    } catch {
-      /* без хранилища */
-    }
   }, [garlandMode]);
   const [isRingModalOpen, setIsRingModalOpen] = useState(false);
   const [myHungGift, setMyHungGift] = useState(null);
@@ -5246,7 +5245,6 @@ export default function App() {
   // --- праздник: адвент, карта, ачивки ---
   const [adventOpened, setAdventOpened] = useState(() => loadAdventOpened());
   const [isAdventOpen, setIsAdventOpen] = useState(false);
-  const [isMapOpen, setIsMapOpen] = useState(false);
   const [isAchOpen, setIsAchOpen] = useState(false);
   const [achievements, setAchievements] = useState(null);
   const [myCity, setMyCity] = useState("");
@@ -5269,6 +5267,16 @@ export default function App() {
     refreshTelegram();
     setIsTelegramOpen(true);
   };
+  // Скрытая репетиция полуночи для проверки: /?rehearsal=1
+  useEffect(() => {
+    if (typeof window === "undefined" || !new URLSearchParams(window.location.search).has("rehearsal")) return undefined;
+    const t = window.setTimeout(() => {
+      zoomTargetRef.current = ZOOM_MAX;
+      setMidnightShow({ mode: "rehearsal", key: Date.now() });
+    }, 6000);
+    return () => window.clearTimeout(t);
+  }, []);
+
   const startMidnightShow = useCallback((mode) => {
     musicBoxSynth.init();
     // отходим от Ёлки, чтобы небо с салютом было в кадре
@@ -5514,7 +5522,8 @@ export default function App() {
   // Настоящая полночь: если Ёлка открыта, за 10 секунд до обмена начинается шоу.
   useEffect(() => {
     const target = serverUnlockAtMs ?? UNLOCK_TARGET_MS;
-    const msLeft = target - (Date.now() + clockOffsetMs) - 10_500;
+    // куранты начинаются заранее: 12-й удар — ровно в полночь
+    const msLeft = target - (Date.now() + clockOffsetMs) - (CHIMES_LEAD_S * 1000 + 500);
     if (msLeft < -5_000 || msLeft > 2 ** 31 - 1) return undefined;
     const t = window.setTimeout(() => {
       zoomTargetRef.current = ZOOM_MAX;
@@ -7541,6 +7550,14 @@ export default function App() {
     return () => clearTimeout(t);
   }, [candleQuota.resetsAt, clockOffsetMs, refreshCandles]);
 
+  const [cityInfo, setCityInfo] = useState(null);
+  useEffect(() => {
+    if (!myCity || !isMenuOpen) return;
+    apiFetchCityLeaders(myCity)
+      .then((d) => setCityInfo(d.my_city || null))
+      .catch(() => {});
+  }, [myCity, isMenuOpen]);
+
   const refreshAchievements = useCallback(async () => {
     try {
       const data = await apiFetchAchievements();
@@ -7976,16 +7993,13 @@ export default function App() {
         extraWeather={advent.weather}
         extraGarlands={advent.garlands}
         fest={{
+          cityInfo,
           onMine: openMyGifts,
           onAdvent: () => {
             setIsMenuOpen(false);
             setIsAdventOpen(true);
           },
           adventBadge,
-          onMap: () => {
-            setIsMenuOpen(false);
-            setIsMapOpen(true);
-          },
           onAchievements: () => {
             setIsMenuOpen(false);
             setIsAchOpen(true);
@@ -7999,7 +8013,7 @@ export default function App() {
           telegramLinked,
           onRehearsal: () => {
             setIsMenuOpen(false);
-            startMidnightShow(advent.fireworks ? "fireworks" : "rehearsal");
+            startMidnightShow("fireworks");
           },
           fireworksUnlocked: advent.fireworks,
         }}
@@ -8561,6 +8575,10 @@ export default function App() {
             nowOffsetMs={clockOffsetMs}
             onOwl={() => musicBoxSynth.playOwlChime()}
             fireworks3d={fireworksRef.current}
+            getAudioContext={() => {
+              musicBoxSynth.init();
+              return musicBoxSynth.ctx;
+            }}
             onDone={(mode) => {
               setMidnightShow(null);
               if (mode === "live") setIsRingModalOpen(true);
@@ -8598,19 +8616,6 @@ export default function App() {
         />
       )}
       {isAchOpen && <AchievementsModal data={achievements} onClose={() => setIsAchOpen(false)} />}
-      {isMapOpen && (
-        <React.Suspense fallback={null}>
-          <WorldMapModal
-            fetchMap={apiFetchWorldMap}
-            fetchCityLeaders={apiFetchCityLeaders}
-            myCity={myCity}
-            onShowGift={(id) => {
-              if (focusGiftById(id)) setIsMapOpen(false);
-            }}
-            onClose={() => setIsMapOpen(false)}
-          />
-        </React.Suspense>
-      )}
 
       {myGiftsSheet && (
         <MyGiftsSheet

@@ -162,7 +162,7 @@ export const ADVENT_DAYS = [
   { day: 11, type: "voice", id: "kalimba", icon: "🎐", title: "Звук «Калимба»" },
   { day: 12, type: "color", id: "lingonberry", icon: "🍒", title: "Цвет «Брусника»", hex: "#be123c" },
   { day: 13, type: "template", id: "candy_cane", icon: "🍭", title: "Фигурка «Леденец»" },
-  { day: 14, type: "garland", id: "ice", icon: "🧊", title: "Ледяная гирлянда" },
+  { day: 14, type: "color", id: "silver", icon: "🩶", title: "Цвет «Серебро»", hex: "#cbd5e1" },
   { day: 15, type: "voice", id: "marimba", icon: "🪵", title: "Звук «Маримба»" },
   { day: 16, type: "melody", id: "elochka", icon: "🎄", title: "Мелодия «В лесу родилась ёлочка»" },
   { day: 17, type: "template", id: "mitten", icon: "🧤", title: "Фигурка «Варежка»" },
