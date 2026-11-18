@@ -6,7 +6,7 @@ async def test_unknown_api_path_is_404(client):
 async def test_security_headers_present(client):
     response = await client.get("/api/health")
     assert response.headers["x-content-type-options"] == "nosniff"
-    assert response.headers["x-frame-options"] == "DENY"
+    assert "frame-ancestors" in response.headers["content-security-policy"]
     assert "default-src 'self'" in response.headers["content-security-policy"]
     assert response.headers["cache-control"] == "no-store"
 

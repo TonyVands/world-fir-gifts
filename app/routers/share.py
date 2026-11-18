@@ -12,7 +12,7 @@ from starlette.concurrency import run_in_threadpool
 from app.core import config
 from app.database import AsyncSessionLocal
 from app.models import Gift
-from app.services.share_card import render_gift_card, render_site_card
+from app.services.share_card import render_gift_card, render_gift_story, render_site_card
 
 router = APIRouter(prefix="/api/share", tags=["share"])
 
@@ -54,6 +54,25 @@ async def gift_card_png(gift_id: str):
     key = f"{gift.id}:{gift.genome_hash}:{gift.candles_count}:{(gift.card_preview or {}).get('teaser_tag', '')}"
     async with _render_lock:
         png = await run_in_threadpool(render_gift_card, data, key)
+    return Response(png, media_type="image/png", headers={"Cache-Control": "public, max-age=600"})
+
+
+@router.get("/story/{gift_id}.png")
+async def gift_story_png(gift_id: str, request: Request, own: int = 1):
+    """Картинка 1080×1920 для сторис."""
+    gift = await load_public_gift(gift_id)
+    if gift is None:
+        raise HTTPException(status_code=404, detail="Подарок не найден.")
+    host = public_base_url(request).split("://", 1)[-1]
+    data = {
+        "id": gift.id,
+        "snowglobe": gift.snowglobe or {},
+        "card_preview": gift.card_preview or {},
+        "candles_count": gift.candles_count,
+    }
+    key = f"story:{own}:{gift.id}:{gift.genome_hash}:{gift.candles_count}:{(gift.card_preview or {}).get('teaser_tag', '')}:{host}"
+    async with _render_lock:
+        png = await run_in_threadpool(render_gift_story, data, host, key, bool(own))
     return Response(png, media_type="image/png", headers={"Cache-Control": "public, max-age=600"})
 
 

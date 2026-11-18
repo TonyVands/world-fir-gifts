@@ -19,7 +19,10 @@ from sqlalchemy import delete, func, select
 
 from app.core import config
 from app.core.unlock import get_unlock_timestamp
-from app.models import AppFlag, CandleLight, Gift, TelegramLink, User
+import html
+
+from app.models import AppFlag, CandleLight, Gift, MaxLink, TelegramLink, User
+from app.services import max_bot
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -93,15 +96,21 @@ def gift_link(gift_id: str) -> str:
 
 
 async def notify_user(session, user_id: str, text: str) -> None:
+    """Сообщение мастеру во все подключённые мессенджеры (Telegram, MAX)."""
     link = await session.get(TelegramLink, user_id)
-    if link is None:
-        return
-    await send_message(link.chat_id, text)
+    if link is not None:
+        await send_message(link.chat_id, text)
+    if max_bot.enabled():
+        await max_bot.notify_user(session, user_id, html.unescape(text))
+
+
+def any_enabled() -> bool:
+    return enabled() or max_bot.enabled()
 
 
 def schedule(coro) -> None:
-    """Отправка в фоне: запрос пользователя не ждёт Telegram."""
-    if not enabled():
+    """Отправка в фоне: запрос пользователя не ждёт мессенджеры."""
+    if not any_enabled():
         coro.close()
         return
     try:
@@ -219,6 +228,15 @@ async def _broadcast(session, text: str) -> int:
         if await send_message(chat_id, text):
             sent += 1
         await asyncio.sleep(0.05)  # ≤ 20 сообщений в секунду
+    if max_bot.enabled():
+        max_rows = (
+            await session.execute(select(MaxLink.max_user_id).join(Gift, Gift.author_id == MaxLink.user_id).distinct())
+        ).all()
+        plain = html.unescape(text)
+        for (uid,) in max_rows:
+            if await max_bot.send_message(uid, plain):
+                sent += 1
+            await asyncio.sleep(0.05)
     return sent
 
 
@@ -279,12 +297,17 @@ async def _schedule_loop() -> None:
 def start(session_factory) -> list[asyncio.Task]:
     global _session_factory
     _session_factory = session_factory
-    if not enabled():
-        logger.info("[Telegram] TELEGRAM_BOT_TOKEN не задан — уведомления выключены.")
-        return []
-    return [asyncio.create_task(_poll_loop()), asyncio.create_task(_schedule_loop())]
+    tasks = max_bot.start(session_factory)
+    if enabled():
+        tasks.append(asyncio.create_task(_poll_loop()))
+    else:
+        logger.info("[Telegram] TELEGRAM_BOT_TOKEN не задан — бот Telegram выключен.")
+    if tasks:
+        tasks.append(asyncio.create_task(_schedule_loop()))
+    return tasks
 
 
 def bind_session_factory(session_factory) -> None:
     global _session_factory
     _session_factory = session_factory
+    max_bot.bind_session_factory(session_factory)

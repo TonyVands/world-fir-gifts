@@ -44,6 +44,10 @@ DAILY_CANDLES = max(1, _env_int("DAILY_CANDLES", 3))
 # просто кнопка «Уведомления» сообщает, что бот не подключён.
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_BOT_USERNAME = os.getenv("TELEGRAM_BOT_USERNAME", "").strip().lstrip("@")
+# Бот в мессенджере MAX (platform-api.max.ru): те же уведомления, что и в Telegram.
+MAX_BOT_TOKEN = os.getenv("MAX_BOT_TOKEN", "").strip()
+MAX_BOT_USERNAME = os.getenv("MAX_BOT_USERNAME", "").strip().lstrip("@")
+MAX_API_BASE = os.getenv("MAX_API_BASE", "https://platform-api.max.ru").strip().rstrip("/")
 # Свой шар можно переделать раз в N дней (0 — без ограничения).
 GIFT_EDIT_COOLDOWN_DAYS = max(0, _env_int("GIFT_EDIT_COOLDOWN_DAYS", 5))
 CANDLE_DAY_TZ = timezone(timedelta(hours=_env_int("CANDLE_DAY_UTC_OFFSET_H", 3)))

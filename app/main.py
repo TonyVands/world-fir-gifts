@@ -24,7 +24,7 @@ from app.services.seeder import seed_initial_gifts
 
 logger = logging.getLogger("uvicorn.error")
 
-API_VERSION = "17.3.0"
+API_VERSION = "17.4.0"
 
 
 async def _rotate_and_check_contacts() -> None:
@@ -120,7 +120,7 @@ app.add_middleware(GZipMiddleware, minimum_size=1024)
 _CSP = "; ".join(
     [
         "default-src 'self'",
-        "script-src 'self'",
+        "script-src 'self' https://telegram.org",  # SDK мини-приложения Telegram (грузится только внутри Telegram)
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
         "font-src 'self' data: https://fonts.gstatic.com",
         "img-src 'self' data: blob:",
@@ -130,7 +130,8 @@ _CSP = "; ".join(
         "object-src 'none'",
         "base-uri 'self'",
         "form-action 'self'",
-        "frame-ancestors 'none'",
+        # встраивание разрешено только веб-версиям Telegram и MAX (мини-приложение)
+        "frame-ancestors 'self' https://web.telegram.org https://*.telegram.org https://web.max.ru https://*.max.ru",
     ]
 )
 
@@ -141,7 +142,7 @@ async def security_headers(request: Request, call_next):
     h = response.headers
     h.setdefault("X-Content-Type-Options", "nosniff")
     h.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
-    h.setdefault("X-Frame-Options", "DENY")
+    # X-Frame-Options не ставим: его заменяет frame-ancestors в CSP (мини-приложения Telegram/MAX)
     h.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
     if config.SECURITY_CSP and not request.url.path.startswith("/api/docs"):
         h.setdefault("Content-Security-Policy", _CSP)
@@ -164,6 +165,7 @@ app.include_router(ws.router)
 app.include_router(share.router)
 app.include_router(world.router)
 app.include_router(telegram.router)
+app.include_router(telegram.max_router)
 
 
 def _db_mode() -> str:

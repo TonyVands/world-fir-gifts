@@ -27,6 +27,7 @@ async def test_link_flow_and_commands(client, db_session, monkeypatch):
     monkeypatch.setattr(telegram, "send_message", fake_send)
     monkeypatch.setattr(config, "TELEGRAM_BOT_TOKEN", "test")
     monkeypatch.setattr(telegram, "_bot_username", "elka_test_bot")
+    monkeypatch.setattr(telegram, "schedule", lambda coro: coro.close())  # без фоновых задач в тесте
 
     owner = session_headers("tg-owner")
     assert (await client.post("/api/telegram/link", headers=owner)).status_code == 409  # нет шара
@@ -91,3 +92,53 @@ async def test_daily_and_ring_jobs(client, db_session, monkeypatch):
     done = await telegram.run_daily_and_ring_jobs(db_session, now=unlock - timedelta(minutes=59))
     assert any(k.startswith("ring_1h") for k in done)
     assert any("остался час" in t for _, t in sent)
+
+
+async def test_max_link_flow_and_notify(client, db_session, monkeypatch):
+    from app.models import MaxLink
+    from app.services import max_bot
+
+    sent: list[tuple[str, str]] = []
+
+    async def fake_send(uid, text):
+        sent.append((uid, text))
+        return True
+
+    monkeypatch.setattr(max_bot, "send_message", fake_send)
+    monkeypatch.setattr(config, "MAX_BOT_TOKEN", "test")
+    monkeypatch.setattr(max_bot, "_bot_username", "elka_max_bot")
+    monkeypatch.setattr(telegram, "schedule", lambda coro: coro.close())
+    assert (await client.get("/api/max/status")).json()["enabled"] is True
+
+    owner = session_headers("max-owner")
+    gift = (await client.post("/api/gifts", json=GIFT_PAYLOAD, headers=owner)).json()
+    url = (await client.post("/api/max/link", headers=owner)).json()["url"]
+    assert url.startswith("https://max.ru/elka_max_bot?start=")
+    code = url.split("start=")[1]
+
+    reply = await max_bot.handle_update(db_session, {"update_type": "bot_started", "user": {"user_id": 4242}, "payload": code})
+    assert "Готово" in reply
+    assert (await client.get("/api/max/status", headers=owner)).json()["linked"] is True
+
+    # уведомление о свече приходит и в MAX, без HTML-экранирования
+    telegram.bind_session_factory(lambda: _ctx(db_session))
+    await client.post(f"/api/gifts/{gift['id']}/candle", headers=session_headers("fan2"))
+    await telegram.notify_candle(gift["id"])
+    assert any(uid == "4242" and "первую свечу" in t and "&amp;" not in t for uid, t in sent)
+
+    stop = await max_bot.handle_update(
+        db_session, {"update_type": "message_created", "message": {"sender": {"user_id": 4242}, "body": {"text": "/stop"}}}
+    )
+    assert "отключены" in stop
+    assert (await db_session.execute(select(MaxLink))).first() is None
+
+
+async def test_story_png(client):
+    owner = session_headers("story-owner")
+    gift = (await client.post("/api/gifts", json=GIFT_PAYLOAD, headers=owner)).json()
+    res = await client.get(f"/api/share/story/{gift['id']}.png")
+    assert res.status_code == 200 and res.headers["content-type"] == "image/png"
+    from PIL import Image
+    import io
+
+    assert Image.open(io.BytesIO(res.content)).size == (1080, 1920)

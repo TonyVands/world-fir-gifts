@@ -4,10 +4,9 @@
 // "fireworks" (просто салют — окошко 31 декабря адвент-календаря).
 // ============================================================================
 import React, { useEffect, useRef, useState } from "react";
-import { CHIMES_LEAD_S, QUARTERS_DURATION, STRIKE_INTERVAL, scheduleKremlinChimes, startPeal } from "../lib/bells.js";
+import { CHIMES_LEAD_S, LAST_STRIKE_S, scheduleKremlinChimes, startPeal } from "../lib/bells.js";
 
 // от полуночи до 12-го удара (перезвон + 11 интервалов)
-const LAST_STRIKE_S = QUARTERS_DURATION + 11 * STRIKE_INTERVAL;
 
 const COLORS = ["#ffd166", "#ff6b6b", "#4ade80", "#60a5fa", "#f472b6", "#fde68a", "#a78bfa", "#ffffff"];
 
@@ -195,7 +194,7 @@ export default function MidnightShow({
   // для репетиции «полночь» — через 10 с отсчёта от «сейчас»
   const targetRef = useRef(mode === "live" && startAtMs ? startAtMs : Date.now() + (CHIMES_LEAD_S - 1) * 1000);
 
-  // Куранты: в полночь начинается перезвон, затем 12 ударов (как на Спасской башне)
+  // Куранты: перезвон в последние секунды отсчёта, в 00:00 — первый из 12 ударов
   useEffect(() => {
     if (mode === "fireworks") return undefined;
     const ctx = getAudioContext?.();
@@ -235,7 +234,7 @@ export default function MidnightShow({
       startPeal(ctx, 14);
       return undefined;
     }
-    const t = window.setTimeout(() => startPeal(ctx, 22), (LAST_STRIKE_S + 2.5) * 1000);
+    const t = window.setTimeout(() => startPeal(ctx, 22), (LAST_STRIKE_S + 1.2) * 1000);
     return () => window.clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase === "celebrate"]);
@@ -251,11 +250,11 @@ export default function MidnightShow({
           setPhase("owl");
           setOwlFlying(true);
           onOwl?.();
-        }, (LAST_STRIKE_S + 1.5) * 1000)
+        }, (LAST_STRIKE_S + 1.0) * 1000)
       );
     }
     timers.push(
-      window.setTimeout(() => onDone?.(mode), mode === "fireworks" ? 20_000 : (LAST_STRIKE_S + 14) * 1000)
+      window.setTimeout(() => onDone?.(mode), mode === "fireworks" ? 20_000 : (LAST_STRIKE_S + 13) * 1000)
     );
     return () => timers.forEach((t) => window.clearTimeout(t));
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -289,7 +288,7 @@ export default function MidnightShow({
           </div>
           {phase === "celebrate" && (
             <div className="mt-3 inline-block rounded-2xl bg-slate-950/45 backdrop-blur-md border border-amber-200/20 px-4 py-2 text-sm text-amber-100">
-              {strike === 0 ? "🔔 Звучит перезвон курантов…" : `🔔 Бьют куранты · ${strike} из 12`}
+              {`🔔 Бьют куранты · ${Math.max(1, strike)} из 12`}
             </div>
           )}
           {phase === "owl" && (

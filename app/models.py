@@ -89,6 +89,16 @@ class CandleLight(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
+class MaxLink(Base):
+    """Мастер подключил уведомления в боте мессенджера MAX."""
+
+    __tablename__ = "max_links"
+
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), primary_key=True)
+    max_user_id: Mapped[str] = mapped_column(String(32), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
 class TelegramLink(Base):
     """Мастер подключил уведомления в Telegram-боте."""
 

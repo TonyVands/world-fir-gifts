@@ -12,6 +12,7 @@ import { createClearing } from "./scene/clearing.js";
 import { TIME_OF_DAY, WEATHER_PRESETS, createAtmosphereController } from "./scene/atmosphere.js";
 import { createFireworks3D } from "./scene/fireworks3d.js";
 import { CHIMES_LEAD_S } from "./lib/bells.js";
+import VoxelPaintEditor from "./ui/VoxelPaintEditor.jsx";
 const MidnightShow = React.lazy(() => import("./ui/MidnightShow.jsx"));
 import { computeDeterministicGenomeHash } from "./lib/genome.js";
 import { inspectVoxelGeometrySafety } from "./lib/voxelSafety.js";
@@ -38,6 +39,9 @@ import {
   fetchTelegramStatus as apiFetchTelegramStatus,
   createTelegramLink as apiCreateTelegramLink,
   deleteTelegramLink as apiDeleteTelegramLink,
+  fetchMaxStatus as apiFetchMaxStatus,
+  createMaxLink as apiCreateMaxLink,
+  deleteMaxLink as apiDeleteMaxLink,
   fetchGifts as apiFetchGifts,
   fetchMyGift as apiFetchMyGift,
   updateGift as apiUpdateGift,
@@ -2833,6 +2837,78 @@ const ALL_WEATHER = [...WEATHER_PRESETS, ...ADVENT_WEATHER];
 const VOICE_BY_ID = Object.fromEntries([...VOICE_OPTIONS, ...ADVENT_VOICES].map((v) => [v.id, v]));
 const DEFAULT_VOICES = { celesta: "celesta", harp: "harp", cello: "cello", flute: "flute" };
 
+function StudioTip({ step, total, onNext, onSkip, arrow = "up", children }) {
+  return (
+    <div className="relative rounded-2xl bg-amber-300 text-slate-950 p-3 shadow-lg shadow-amber-500/20" role="note">
+      <span
+        className={`absolute left-8 w-3 h-3 rotate-45 bg-amber-300 ${arrow === "up" ? "-top-1.5" : "-bottom-1.5"}`}
+        aria-hidden="true"
+      />
+      <div className="text-sm leading-snug">{children}</div>
+      <div className="flex items-center gap-2 mt-2">
+        <span className="text-[11px] opacity-70">
+          {step + 1} из {total}
+        </span>
+        <button type="button" onClick={onSkip} className="ml-auto text-xs underline opacity-70">
+          Пропустить
+        </button>
+        <button type="button" onClick={onNext} className="h-8 px-3 rounded-lg bg-slate-950 text-amber-200 text-xs font-semibold">
+          {step + 1 >= total ? "Понятно" : "Дальше"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// Эльф-музыкант для студии: колпак цвета дорожки, инструмент в руках.
+function StudioElf({ color, icon, hit, muted, selected, size = 64 }) {
+  return (
+    <div className="relative" style={{ width: size, height: size * 1.15 }}>
+      <svg
+        viewBox="0 0 64 74"
+        width={size}
+        height={size * 1.15}
+        aria-hidden="true"
+        style={{
+          transition: "transform .12s ease-out, filter .2s",
+          transform: hit ? "translateY(-5px) scale(1.06)" : "none",
+          filter: muted ? "grayscale(1) brightness(.6)" : selected ? `drop-shadow(0 0 8px ${color})` : "none",
+        }}
+      >
+        {/* колпак */}
+        <path d="M18 30 L36 2 Q40 0 42 6 L46 30 Z" fill={color} />
+        <circle cx="40" cy="4" r="4" fill="#f8fafc" />
+        <rect x="14" y="27" width="36" height="7" rx="3.5" fill="#f8fafc" />
+        {/* лицо */}
+        <circle cx="32" cy="42" r="12" fill="#fde2c8" />
+        <circle cx="27.5" cy="41" r="1.6" fill="#1e293b" />
+        <circle cx="36.5" cy="41" r="1.6" fill="#1e293b" />
+        <circle cx="25" cy="46" r="2.2" fill="#fca5a5" opacity=".7" />
+        <circle cx="39" cy="46" r="2.2" fill="#fca5a5" opacity=".7" />
+        {muted ? (
+          <path d="M28 48 h8" stroke="#1e293b" strokeWidth="1.6" strokeLinecap="round" />
+        ) : (
+          <path d="M28 47 q4 4 8 0" stroke="#1e293b" strokeWidth="1.6" fill="none" strokeLinecap="round" />
+        )}
+        {/* ушки */}
+        <path d="M20 40 l-5 -3 l3 7 z" fill="#fde2c8" />
+        <path d="M44 40 l5 -3 l-3 7 z" fill="#fde2c8" />
+        {/* кафтан */}
+        <path d="M18 74 Q18 56 32 54 Q46 56 46 74 Z" fill={color} opacity=".85" />
+        <path d="M32 55 V74" stroke="#f8fafc" strokeWidth="1.5" opacity=".6" />
+      </svg>
+      <span
+        className="absolute text-[22px] leading-none"
+        style={{ right: -4, bottom: 2, transition: "transform .12s", transform: hit ? "rotate(-14deg)" : "none", filter: muted ? "grayscale(1)" : "none" }}
+      >
+        {icon}
+      </span>
+      {hit && <span className="absolute -top-1 -right-1 text-sm text-white animate-ping">♪</span>}
+      {muted && <span className="absolute -top-1 right-0 text-xs text-slate-300">💤</span>}
+    </div>
+  );
+}
+
 function MelodyStudio({
   tracks,
   setTrack,
@@ -2951,6 +3027,26 @@ function MelodyStudio({
       /* без хранилища */
     }
   };
+
+  // ---------- подсказки при первом входе в «Подробно» ----------
+  const [tourStep, setTourStep] = useState(null);
+  useEffect(() => {
+    if (mode !== "pro") return;
+    try {
+      if (!localStorage.getItem("wfg_studio_tour")) setTourStep(0);
+    } catch {
+      /* без хранилища — без тура */
+    }
+  }, [mode]);
+  const endTour = () => {
+    setTourStep(null);
+    try {
+      localStorage.setItem("wfg_studio_tour", "1");
+    } catch {
+      /* ок */
+    }
+  };
+  const nextTour = () => (tourStep >= 2 ? endTour() : setTourStep(tourStep + 1));
 
   // ---------- простой режим: настроение → вариант → инструмент ----------
   const [moodId, setMoodId] = useState(null);
@@ -3133,120 +3229,142 @@ function MelodyStudio({
             <button type="button" onClick={() => setShowAllVoices((s) => !s)} className="text-xs text-amber-200/90 underline-offset-2 hover:underline">
               {showAllVoices ? "Свернуть" : `Все инструменты (${allVoices.length})`}
             </button>
-            {variantIdx != null && (
-              <div className="text-xs text-slate-400">
-                Хотите поменять отдельные ноты или звук аккордов и баса? Откройте{" "}
-                <button type="button" onClick={() => setMode("pro")} className="text-amber-200 underline">
-                  «Подробно»
-                </button>
-                .
-              </div>
-            )}
           </div>
+
+          <button
+            type="button"
+            onClick={() => setMode("pro")}
+            className="w-full flex items-center gap-2 p-2.5 rounded-2xl border border-white/10 bg-gradient-to-r from-indigo-500/15 to-fuchsia-500/10 hover:from-indigo-500/25 text-left"
+          >
+            <span className="flex -space-x-3 shrink-0">
+              {MUSICIANS.map((m) => (
+                <StudioElf key={m.id} color={m.color} icon="" size={30} />
+              ))}
+            </span>
+            <span className="flex-1 min-w-0">
+              <span className="block text-sm font-semibold text-white">В шкатулке играют 5 музыкантов</span>
+              <span className="block text-[11px] text-slate-400">Мелодия, аккорды, бас, соло и ритм — каждому свой инструмент</span>
+            </span>
+            <span className="text-amber-200 text-sm shrink-0">Подробно →</span>
+          </button>
         </div>
       ) : (
         <div className="space-y-3">
-          {/* Ансамбль из 5 музыкантов */}
-          <div className="space-y-1.5">
-            {MUSICIANS.map((m, i) => {
-              const v = voiceOf(m.id);
-              const arr = tracks[m.id] || [];
-              const notes = arr.filter((n) => n > 0).length;
-              const isActive = active === m.id;
-              return (
-                <div key={m.id} className="space-y-1.5">
-                  <div
-                    className={`p-2 rounded-2xl border transition space-y-1.5 ${
-                      isActive ? "bg-white/10 border-white/30" : "bg-white/[0.04] border-white/10"
-                    } ${mutes[m.id] ? "opacity-50" : ""}`}
-                    style={isActive ? { boxShadow: `inset 3px 0 0 ${m.color}` } : undefined}
-                  >
-                    <div className="flex items-center gap-2.5">
-                      <button
-                        type="button"
-                        onClick={() => setActive(m.id)}
-                        aria-label={`Редактировать: ${m.role}`}
-                        className="w-10 h-10 shrink-0 rounded-xl flex items-center justify-center font-bold text-slate-950"
-                        style={{ background: m.color }}
-                      >
-                        {i + 1}
-                      </button>
-                      <button type="button" onClick={() => setActive(m.id)} className="flex-1 min-w-0 text-left">
-                        <div className="text-sm font-semibold text-white leading-tight">{m.role}</div>
-                        <div className="text-[11px] text-slate-400 leading-tight truncate">{m.hint}</div>
-                      </button>
-                      {m.id !== "drums" ? (
-                        <button
-                          type="button"
-                          onClick={() => setVoiceMenuFor((x) => (x === m.id ? null : m.id))}
-                          aria-expanded={voiceMenuFor === m.id}
-                          className="shrink-0 h-10 px-3 rounded-xl bg-white/10 hover:bg-white/15 text-xs text-white flex items-center gap-1.5"
-                          title="Сменить инструмент"
-                        >
-                          <span>{v?.icon}</span>
-                          <span className="max-w-[96px] truncate">{v?.name}</span>
-                          <span className="text-slate-400">▾</span>
-                        </button>
-                      ) : (
-                        <span className="shrink-0 h-10 px-3 rounded-xl bg-white/5 text-xs text-slate-300 flex items-center">🥁 Ударные</span>
-                      )}
-                      <button
-                        type="button"
-                        onClick={() => setMutes((p) => ({ ...p, [m.id]: !p[m.id] }))}
-                        aria-label={`${mutes[m.id] ? "Включить" : "Заглушить"}: ${m.role}`}
-                        className={`w-10 h-10 shrink-0 rounded-xl text-sm ${mutes[m.id] ? "bg-rose-500/20 text-rose-200" : "bg-white/5 text-slate-300"}`}
-                      >
-                        {mutes[m.id] ? "🔇" : "🔈"}
-                      </button>
-                    </div>
-                    <button type="button" onClick={() => setActive(m.id)} className="w-full flex items-center pl-[50px] h-6" aria-label={`${m.role}: ${notes} нот`}>
-                      {notes > 0 ? (
-                        <MiniPattern arr={arr} color={m.color} />
-                      ) : (
-                        <span className="text-[11px] text-slate-500">молчит — нажмите, чтобы добавить ноты</span>
-                      )}
+          {/* Сцена: 5 эльфов-музыкантов */}
+          <div className="rounded-2xl bg-gradient-to-b from-indigo-500/10 to-transparent border border-white/10 p-2">
+            <div className="grid grid-cols-5 gap-1">
+              {MUSICIANS.map((m, i) => {
+                const v = voiceOf(m.id);
+                const arr = tracks[m.id] || [];
+                const notes = arr.filter((n) => n > 0).length;
+                const muted = Boolean(mutes[m.id]);
+                const hit = cursor != null && !muted && (arr[cursor] || 0) > 0;
+                return (
+                  <div key={m.id} className="flex flex-col items-center gap-1 min-w-0">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMutes((p) => ({ ...p, [m.id]: !p[m.id] }));
+                        if (muted && !isPlaying) musicBoxSynth.playSingleNote(m.id, m.id === "drums" ? 4 : 9, m.id === "drums" ? null : voices[m.id] || DEFAULT_VOICES[m.id]);
+                      }}
+                      aria-pressed={!muted}
+                      aria-label={`${m.role}: ${muted ? "молчит — нажмите, чтобы заиграл" : "играет — нажмите, чтобы замолчал"}`}
+                      className={`rounded-2xl p-1 transition ${active === m.id ? "bg-white/10" : ""}`}
+                    >
+                      <StudioElf color={m.color} icon={v?.icon || "🥁"} hit={hit} muted={muted} selected={active === m.id} size={52} />
                     </button>
-                  </div>
-                  {voiceMenuFor === m.id && (
-                    <div className="flex flex-wrap gap-1.5 p-2 rounded-2xl bg-black/30 border border-white/10">
-                      {allVoices.map((vo) => (
-                        <button
-                          key={vo.id}
-                          type="button"
-                          onClick={() => {
-                            setVoice(m.id, vo.id);
-                            musicBoxSynth.playSingleNote(m.id, 7, vo.id);
-                          }}
-                          className={`px-2.5 py-1.5 rounded-full text-xs border ${
-                            (voices[m.id] || DEFAULT_VOICES[m.id]) === vo.id
-                              ? "bg-white/20 border-white/40 text-white"
-                              : "bg-white/[0.04] border-white/10 text-slate-300"
-                          }`}
-                        >
-                          {vo.icon} {vo.name}
-                        </button>
-                      ))}
-                      {lockedVoices > 0 && (
-                        <span className="px-2.5 py-1.5 rounded-full text-[11px] border border-dashed border-white/15 text-slate-500">
-                          🔒 ещё {lockedVoices} в адвент-календаре
-                        </span>
-                      )}
+                    <div className="text-[11px] font-semibold leading-tight text-center" style={{ color: muted ? "#64748b" : m.color }}>
+                      {i + 1}. {m.role}
                     </div>
-                  )}
+                    {m.id !== "drums" ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActive(m.id);
+                          setVoiceMenuFor((x) => (x === m.id ? null : m.id));
+                        }}
+                        aria-expanded={voiceMenuFor === m.id}
+                        title="Сменить инструмент"
+                        className={`w-full h-8 px-1 rounded-lg text-[10px] flex items-center justify-center gap-0.5 border ${
+                          voiceMenuFor === m.id ? "bg-white/20 border-white/40 text-white" : "bg-white/[0.06] border-white/10 text-slate-200"
+                        }`}
+                      >
+                        <span className="truncate">{v?.name}</span>
+                        <span className="text-slate-400 shrink-0">▾</span>
+                      </button>
+                    ) : (
+                      <span className="w-full h-8 px-1 rounded-lg text-[10px] flex items-center justify-center bg-white/[0.03] text-slate-400">ударные</span>
+                    )}
+                    {notes === 0 && <span className="text-[9px] text-slate-500 -mt-0.5">без нот</span>}
+                  </div>
+                );
+              })}
+            </div>
+            {voiceMenuFor && (
+              <div className="mt-2 space-y-1.5">
+                <div className="text-[11px] text-slate-400 px-1">
+                  На чём играет «{MUSICIANS.find((x) => x.id === voiceMenuFor)?.role}»:
                 </div>
-              );
-            })}
+                <div className="flex flex-wrap gap-1.5 p-2 rounded-2xl bg-black/30 border border-white/10">
+                  {allVoices.map((vo) => (
+                    <button
+                      key={vo.id}
+                      type="button"
+                      onClick={() => {
+                        setVoice(voiceMenuFor, vo.id);
+                        musicBoxSynth.playSingleNote(voiceMenuFor, 7, vo.id);
+                      }}
+                      className={`px-2.5 py-1.5 rounded-full text-xs border ${
+                        (voices[voiceMenuFor] || DEFAULT_VOICES[voiceMenuFor]) === vo.id
+                          ? "bg-white/20 border-white/40 text-white"
+                          : "bg-white/[0.04] border-white/10 text-slate-300"
+                      }`}
+                    >
+                      {vo.icon} {vo.name}
+                    </button>
+                  ))}
+                  {lockedVoices > 0 && (
+                    <span className="px-2.5 py-1.5 rounded-full text-[11px] border border-dashed border-white/15 text-slate-500">
+                      🔒 ещё {lockedVoices} в адвент-календаре
+                    </span>
+                  )}
+                  <button type="button" onClick={() => setVoiceMenuFor(null)} className="ml-auto px-3 py-1.5 rounded-full text-xs bg-amber-300 text-slate-950 font-semibold">
+                    Готово
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
+
+          {tourStep != null && tourStep < 2 && (
+            <StudioTip step={tourStep} total={3} onNext={nextTour} onSkip={endTour}>
+              {tourStep === 0
+                ? "Это 5 музыкантов вашей шкатулки — у каждого своя партия. Нажмите на эльфа: он замолчит, нажмите ещё раз — снова заиграет."
+                : "Кнопка ▾ под эльфом — выбрать, на чём он играет: пианино, скрипка, колокольчики и ещё 20 инструментов."}
+            </StudioTip>
+          )}
 
           {/* Ноты выбранного музыканта */}
           <div className="rounded-2xl bg-black/30 border border-white/10 p-1.5 sm:p-2">
-            <div className="flex items-center justify-between px-1 pb-1.5 text-[11px] text-slate-400">
-              <span>
-                Ноты: <b style={{ color: meta.color }}>{meta.role}</b>
-                {voiceOf(active) ? ` · ${voiceOf(active).name}` : ""}
-              </span>
-              <span>нажмите клетку — нота зазвучит</span>
+            <div className="flex items-center gap-1 px-1 pb-1.5">
+              <span className="text-[11px] text-slate-400 mr-1 shrink-0">Ноты:</span>
+              <div className="flex gap-1 overflow-x-auto" role="tablist" aria-label="Чьи ноты редактировать">
+                {MUSICIANS.map((m, i) => (
+                  <button
+                    key={m.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={active === m.id}
+                    onClick={() => setActive(m.id)}
+                    className={`h-7 px-2 rounded-lg text-[11px] whitespace-nowrap border ${active === m.id ? "font-semibold text-slate-950" : "text-slate-300 bg-white/5 border-white/10"}`}
+                    style={active === m.id ? { background: m.color, borderColor: m.color } : undefined}
+                  >
+                    {i + 1}. {m.role}
+                  </button>
+                ))}
+              </div>
             </div>
+            <div className="px-1 pb-1.5 text-[10px] text-slate-500">Нажмите клетку — нота сразу зазвучит. Нажмите на название ноты слева — услышите её.</div>
             <div className="grid grid-cols-[38px_repeat(16,minmax(0,1fr))] sm:grid-cols-[50px_repeat(16,minmax(0,1fr))] gap-[2px] sm:gap-[3px] mb-1">
               <div />
               {Array.from({ length: 16 }).map((_, i) => (
@@ -3273,10 +3391,15 @@ function MelodyStudio({
               const rn = active === "drums" ? { name: DRUM_RU[row.index] || row.short, oct: "" } : ruNote(row.label);
               return (
                 <div key={row.index} className="grid grid-cols-[38px_repeat(16,minmax(0,1fr))] sm:grid-cols-[50px_repeat(16,minmax(0,1fr))] gap-[2px] sm:gap-[3px] mb-[2px] sm:mb-[3px]">
-                  <div className="text-[10px] text-slate-300 text-right pr-1 self-center truncate">
+                  <button
+                    type="button"
+                    onClick={() => musicBoxSynth.playSingleNote(active, row.index, active === "drums" ? null : voices[active] || DEFAULT_VOICES[active])}
+                    className="text-[10px] text-slate-300 text-right pr-1 self-center truncate rounded hover:bg-white/10 active:bg-white/20 h-6"
+                    title="Послушать ноту"
+                  >
                     {rn.name}
                     {rn.oct && <sup className="text-slate-500 ml-px">{rn.oct}</sup>}
-                  </div>
+                  </button>
                   {Array.from({ length: 16 }).map((_, sIdx) => {
                     const on = track[sIdx] === row.index;
                     const isCur = cursor === sIdx;
@@ -3356,6 +3479,12 @@ function MelodyStudio({
             </div>
           )}
         </div>
+      )}
+
+      {mode === "pro" && tourStep === 2 && (
+        <StudioTip step={2} total={3} onNext={nextTour} onSkip={endTour} arrow="down">
+          ▶ внизу — послушать всех музыкантов вместе. Ноты выбранного эльфа меняются в сетке выше, ↶ отменяет шаг.
+        </StudioTip>
       )}
 
       {/* Плеер: всегда под рукой внизу */}
@@ -3794,25 +3923,15 @@ function GiftWorkshopModal({
         {/* Тело шага */}
         <div className="p-4 sm:p-5 overflow-y-auto flex-1">
           {stepTab === 0 && (
-            <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)] gap-5 items-start">
-              <div className="flex flex-col items-center gap-3">
-                <VoxelSnowglobe3DViewer
-                  voxels={voxels}
-                  baseMaterial={baseMaterial}
-                  glitterColor={glitterColor}
-                  engravingText={engravingText}
-                  size="lg"
-                />
-                <input
-                  type="text"
-                  maxLength={44}
-                  value={engravingText}
-                  onChange={(e) => setEngravingText(e.target.value)}
-                  placeholder="Надпись на подставке"
-                  aria-label="Надпись на подставке"
-                  className={field + " text-center"}
-                />
-              </div>
+            <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)] gap-4 items-start">
+              <VoxelPaintEditor
+                voxels={voxels}
+                setVoxels={setVoxels}
+                palette={palette}
+                color={selectedColor}
+                setColor={setSelectedColor}
+                baseColor={BASE_MAT_COLOR_MAP[baseMaterial] || "#5c2409"}
+              />
 
               <div className="space-y-3.5">
                 <div>
@@ -3829,22 +3948,19 @@ function GiftWorkshopModal({
                   </div>
                 </div>
 
-                <div className="flex flex-wrap items-center gap-1.5">
-                  {palette.map((c) => (
-                    <button
-                      key={c.id}
-                      type="button"
-                      onClick={() => setSelectedColor(c.hex)}
-                      style={{ backgroundColor: c.hex }}
-                      aria-label={c.name}
-                      title={c.name}
-                      className={`w-7 h-7 rounded-full transition ${
-                        selectedColor === c.hex ? "ring-2 ring-white ring-offset-2 ring-offset-slate-900 scale-110" : ""
-                      }`}
-                    />
-                  ))}
-                </div>
+                <input
+                  type="text"
+                  maxLength={44}
+                  value={engravingText}
+                  onChange={(e) => setEngravingText(e.target.value)}
+                  placeholder="Надпись на подставке"
+                  aria-label="Надпись на подставке"
+                  className={field + " text-center"}
+                />
 
+                <details className="rounded-2xl bg-white/[0.03] border border-white/10 p-2.5">
+                  <summary className="text-xs text-slate-300 cursor-pointer select-none">Точная сетка по этажам</summary>
+                  <div className="mt-2.5 space-y-2">
                 <div className="flex gap-3 items-start">
                   <div className="grid grid-cols-8 gap-1 p-2 rounded-2xl bg-black/30 border border-white/10">
                     {Array.from({ length: 64 }).map((_, idx) => {
@@ -3891,6 +4007,9 @@ function GiftWorkshopModal({
                   </div>
                 </div>
                 <div className="text-[11px] text-slate-500">Этаж {activeLayerY + 1} из 8 · светлые клетки — кубики этажом ниже</div>
+
+                  </div>
+                </details>
 
                 {!voxelSafety.isSafe && (
                   <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-400/40 text-xs text-rose-200">
@@ -4326,67 +4445,180 @@ function MiracleRingModal({
 
 function InviteSheet({ gift, isOwn, onClose }) {
   const [copied, setCopied] = useState(false);
+  const [tab, setTab] = useState(gift?.offline ? "link" : "story");
+  const [storyBusy, setStoryBusy] = useState(false);
+  const [storyNote, setStoryNote] = useState("");
   if (!gift) return null;
   const url = giftShareUrl(gift);
   const text = isOwn ? INVITE_TEXT : `Посмотри шар «${gift.card_preview?.teaser_tag || ""}» на Всемирной ёлке 🎄`;
   const enc = encodeURIComponent;
-  const links = [
-    { id: "tg", label: "Telegram", href: `https://t.me/share/url?url=${enc(url)}&text=${enc(text)}` },
-    { id: "wa", label: "WhatsApp", href: `https://wa.me/?text=${enc(`${text} ${url}`)}` },
-    { id: "vk", label: "ВКонтакте", href: `https://vk.com/share.php?url=${enc(url)}&title=${enc(text)}` },
-  ];
-  const copy = async () => {
+  const storyUrl = `/api/share/story/${encodeURIComponent(gift.id)}.png?v=${gift.candles_count || 0}&own=${isOwn ? 1 : 0}`;
+  const canNativeShare = typeof navigator !== "undefined" && Boolean(navigator.share);
+
+  const copyText = async (value) => {
     try {
-      await navigator.clipboard.writeText(`${text} ${url}`);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 2000);
+      await navigator.clipboard.writeText(value);
+      return true;
     } catch {
-      /* буфер обмена недоступен */
+      return false;
     }
   };
+  const copy = async () => {
+    if (await copyText(`${text} ${url}`)) {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2000);
+    }
+  };
+  const nativeShare = () => navigator.share({ title: text, text, url }).catch(() => {});
+
+  // MAX пока не принимает ссылки «поделиться» из браузера: системное меню
+  // телефона (там есть MAX), а на компьютере — копируем текст и открываем веб-версию.
+  const shareToMax = async () => {
+    if (canNativeShare) return nativeShare();
+    await copyText(`${text} ${url}`);
+    setCopied(true);
+    window.open("https://web.max.ru/", "_blank", "noopener");
+  };
+
+  const links = [
+    { id: "tg", label: "Telegram", color: "#38bdf8", href: `https://t.me/share/url?url=${enc(url)}&text=${enc(text)}` },
+    { id: "max", label: "MAX", color: "#818cf8", onClick: shareToMax },
+    { id: "vk", label: "ВКонтакте", color: "#60a5fa", href: `https://vk.com/share.php?url=${enc(url)}&title=${enc(text)}` },
+    { id: "wa", label: "WhatsApp", color: "#4ade80", href: `https://wa.me/?text=${enc(`${text} ${url}`)}` },
+    { id: "ok", label: "Одноклассники", color: "#fb923c", href: `https://connect.ok.ru/offer?url=${enc(url)}&title=${enc(text)}` },
+    { id: "viber", label: "Viber", color: "#c084fc", href: `viber://forward?text=${enc(`${text} ${url}`)}` },
+  ];
+
+  const postStory = async () => {
+    setStoryBusy(true);
+    setStoryNote("");
+    try {
+      const res = await fetch(storyUrl);
+      if (!res.ok) throw new Error("no image");
+      const blob = await res.blob();
+      const file = new File([blob], "vsemirnaya-elka-story.png", { type: "image/png" });
+      const linkCopied = await copyText(url);
+      if (navigator.canShare?.({ files: [file] })) {
+        // телефон: системное меню — Instagram, ВКонтакте, Telegram, MAX…
+        await navigator.share({ files: [file], title: text, text: `${text} ${url}` });
+        setStoryNote(linkCopied ? "Ссылка уже скопирована — вставьте её в стикер «Ссылка» на сторис." : "Добавьте в сторис стикер «Ссылка» с адресом шара.");
+      } else {
+        const href = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = href;
+        a.download = file.name;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        window.setTimeout(() => URL.revokeObjectURL(href), 4000);
+        setStoryNote(
+          `Картинка сохранена. Загрузите её в сторис и добавьте стикер «Ссылка»${linkCopied ? " — адрес уже скопирован" : ""}.`
+        );
+      }
+    } catch (err) {
+      if (err?.name !== "AbortError") setStoryNote("Не получилось подготовить картинку — попробуйте ещё раз.");
+    } finally {
+      setStoryBusy(false);
+    }
+  };
+
   return (
-    <div className="fixed inset-0 z-[58] bg-slate-950/70 backdrop-blur-sm flex items-end sm:items-center justify-center sm:p-4" role="dialog" aria-modal="true" aria-label="Пригласить">
+    <div className="fixed inset-0 z-[58] bg-slate-950/70 backdrop-blur-sm flex items-end sm:items-center justify-center sm:p-4" role="dialog" aria-modal="true" aria-label="Поделиться">
       <button type="button" aria-label="Закрыть" onClick={onClose} className="absolute inset-0" />
       <div className={`${glassPanel} relative w-full max-w-md rounded-t-3xl sm:rounded-3xl p-4 space-y-3 wfg-safe-b wfg-mh-92 overflow-y-auto`}>
         <div className="flex items-center justify-between">
           <div className="font-serif text-lg text-amber-50">{isOwn ? "Позовите друзей зажечь свечу" : "Поделиться шаром"}</div>
           <button type="button" onClick={onClose} aria-label="Закрыть" className="w-10 h-10 rounded-xl bg-white/10 text-slate-200 text-lg">✕</button>
         </div>
+
         {!gift.offline && (
-          <img
-            src={`/api/share/gift/${encodeURIComponent(gift.id)}.png?v=${gift.candles_count || 0}`}
-            alt="Превью шара для мессенджеров"
-            className="w-full rounded-2xl border border-white/10 aspect-[1200/630] object-cover bg-white/5"
-          />
+          <div className="grid grid-cols-2 gap-1 p-1 rounded-xl bg-white/5" role="tablist">
+            {[
+              { id: "story", label: "📲 В сторис" },
+              { id: "link", label: "🔗 Ссылкой" },
+            ].map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                role="tab"
+                aria-selected={tab === t.id}
+                onClick={() => setTab(t.id)}
+                className={`h-9 rounded-lg text-sm ${tab === t.id ? "bg-white/15 text-white font-semibold" : "text-slate-400"}`}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
         )}
-        <div className="text-xs text-slate-400">Так ссылка будет выглядеть в мессенджере. Каждая свеча поднимает шар выше.</div>
-        <div className="grid grid-cols-3 gap-2">
-          {links.map((l) => (
-            <a
-              key={l.id}
-              href={l.href}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="py-2.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-center text-xs text-slate-100"
-            >
-              {l.label}
-            </a>
-          ))}
-        </div>
-        <div className="flex gap-2">
-          <button type="button" onClick={copy} className="flex-1 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-xs text-slate-100">
-            {copied ? "✓ Скопировано" : "Скопировать ссылку"}
-          </button>
-          {typeof navigator !== "undefined" && navigator.share && (
+
+        {tab === "story" && !gift.offline ? (
+          <div className="space-y-3">
+            <div className="flex gap-3 items-center">
+              <img src={storyUrl} alt="Картинка для сторис" className="w-28 aspect-[9/16] object-cover rounded-xl border border-white/10 bg-white/5 shrink-0" />
+              <div className="text-xs text-slate-300 space-y-1.5">
+                <div className="text-sm text-amber-100 font-semibold">Вертикальная открытка 9:16</div>
+                <div>Подходит для историй в Instagram, ВКонтакте, Telegram и MAX.</div>
+                <div className="text-slate-400">Добавьте на сторис стикер «Ссылка» — друзья попадут прямо к вашему шару.</div>
+              </div>
+            </div>
             <button
               type="button"
-              onClick={() => navigator.share({ title: text, text, url }).catch(() => {})}
-              className="flex-1 py-2.5 rounded-xl bg-amber-300 hover:bg-amber-200 text-slate-950 text-xs font-semibold"
+              onClick={postStory}
+              disabled={storyBusy}
+              className="w-full py-3 rounded-xl bg-gradient-to-r from-amber-300 to-pink-300 text-slate-950 font-semibold text-sm disabled:opacity-60"
             >
-              Другое…
+              {storyBusy ? "Готовим картинку…" : canNativeShare ? "Выложить в сторис" : "Скачать картинку для сторис"}
             </button>
-          )}
-        </div>
+            {storyNote && <div className="text-xs text-emerald-200">{storyNote}</div>}
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {!gift.offline && (
+              <img
+                src={`/api/share/gift/${encodeURIComponent(gift.id)}.png?v=${gift.candles_count || 0}`}
+                alt="Превью шара для мессенджеров"
+                className="w-full rounded-2xl border border-white/10 aspect-[1200/630] object-cover bg-white/5"
+              />
+            )}
+            <div className="text-xs text-slate-400">Так ссылка будет выглядеть в мессенджере. Каждая свеча поднимает шар выше.</div>
+            <div className="grid grid-cols-3 gap-2">
+              {links.map((l) =>
+                l.href ? (
+                  <a
+                    key={l.id}
+                    href={l.href}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="py-2.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-center text-xs text-slate-100"
+                    style={{ boxShadow: `inset 0 -2px 0 ${l.color}` }}
+                  >
+                    {l.label}
+                  </a>
+                ) : (
+                  <button
+                    key={l.id}
+                    type="button"
+                    onClick={l.onClick}
+                    className="py-2.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-center text-xs text-slate-100"
+                    style={{ boxShadow: `inset 0 -2px 0 ${l.color}` }}
+                  >
+                    {l.label}
+                  </button>
+                )
+              )}
+            </div>
+            <div className="flex gap-2">
+              <button type="button" onClick={copy} className="flex-1 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-xs text-slate-100">
+                {copied ? "✓ Скопировано" : "Скопировать ссылку"}
+              </button>
+              {canNativeShare && (
+                <button type="button" onClick={nativeShare} className="flex-1 py-2.5 rounded-xl bg-amber-300 hover:bg-amber-200 text-slate-950 text-xs font-semibold">
+                  Другое…
+                </button>
+              )}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -5031,13 +5263,19 @@ function MyGiftsSheet({ data, loading, error, onRetry, initialTab = "mine", litT
   );
 }
 
-function TelegramSheet({ status, hasGift, onConnect, onDisconnect, onClose }) {
+function TelegramSheet({ status, maxStatus, hasGift, onConnect, onDisconnect, onClose }) {
+  const channels = [
+    { id: "tg", name: "Telegram", st: status, btn: "bg-sky-400 hover:bg-sky-300", icon: "✈️" },
+    { id: "max", name: "MAX", st: maxStatus, btn: "bg-indigo-400 hover:bg-indigo-300", icon: "💬" },
+  ];
+  const loading = !status || !maxStatus;
+  const live = channels.filter((c) => c.st?.enabled);
   return (
-    <div className="fixed inset-0 z-[57] bg-slate-950/70 backdrop-blur-sm flex items-end sm:items-center justify-center sm:p-4" role="dialog" aria-modal="true" aria-label="Уведомления в Telegram">
+    <div className="fixed inset-0 z-[57] bg-slate-950/70 backdrop-blur-sm flex items-end sm:items-center justify-center sm:p-4" role="dialog" aria-modal="true" aria-label="Уведомления">
       <button type="button" aria-label="Закрыть" onClick={onClose} className="absolute inset-0" />
       <div className={`${glassPanel} relative w-full max-w-md rounded-t-3xl sm:rounded-3xl p-5 space-y-3 wfg-safe-b wfg-mh-92 overflow-y-auto`}>
         <div className="flex items-center justify-between">
-          <div className="font-serif text-lg text-amber-50">🔔 Уведомления в Telegram</div>
+          <div className="font-serif text-lg text-amber-50">🔔 Уведомления</div>
           <button type="button" onClick={onClose} aria-label="Закрыть" className="w-10 h-10 rounded-xl bg-white/10 text-slate-200 text-lg">✕</button>
         </div>
         <ul className="text-sm text-slate-300 space-y-1.5">
@@ -5045,23 +5283,33 @@ function TelegramSheet({ status, hasGift, onConnect, onDisconnect, onClose }) {
           <li>👑 «Ваш шар — Шар дня!»</li>
           <li>⏳ «До Кольца Чудес 1 час» и поздравление в полночь</li>
         </ul>
-        {!status ? (
+        {loading ? (
           <div className="text-xs text-slate-400">Проверяем…</div>
-        ) : !status.enabled ? (
+        ) : live.length === 0 ? (
           <div className="text-xs text-amber-200/90">Бот уведомлений скоро заработает — загляните чуть позже.</div>
         ) : !hasGift ? (
           <div className="text-xs text-amber-200/90">Сначала повесьте свой шар — уведомления приходят о нём.</div>
-        ) : status.linked ? (
-          <div className="flex items-center gap-2">
-            <span className="flex-1 text-sm text-emerald-300">✓ Подключено{status.bot ? ` к @${status.bot}` : ""}</span>
-            <button type="button" onClick={onDisconnect} className="px-3 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-xs text-slate-300">
-              Отключить
-            </button>
-          </div>
         ) : (
-          <button type="button" onClick={onConnect} className="w-full py-3 rounded-xl bg-sky-400 hover:bg-sky-300 text-slate-950 font-semibold text-sm">
-            Подключить в Telegram
-          </button>
+          <div className="space-y-2">
+            <div className="text-xs text-slate-400">Выберите, где вам удобнее получать новости:</div>
+            {live.map((c) =>
+              c.st.linked ? (
+                <div key={c.id} className="flex items-center gap-2 p-2.5 rounded-xl bg-white/5 border border-white/10">
+                  <span className="flex-1 text-sm text-emerald-300">
+                    ✓ {c.name}
+                    {c.st.bot ? ` · @${c.st.bot}` : ""}
+                  </span>
+                  <button type="button" onClick={() => onDisconnect(c.id)} className="px-3 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-xs text-slate-300">
+                    Отключить
+                  </button>
+                </div>
+              ) : (
+                <button key={c.id} type="button" onClick={() => onConnect(c.id)} className={`w-full py-3 rounded-xl text-slate-950 font-semibold text-sm ${c.btn}`}>
+                  {c.icon} Подключить в {c.name}
+                </button>
+              )
+            )}
+          </div>
         )}
         <div className="text-[11px] text-slate-500">Бот пишет только о вашем шаре и Кольце Чудес. Отключить можно в любой момент командой /stop.</div>
       </div>
@@ -5510,11 +5758,15 @@ export default function App() {
   const [midnightShow, setMidnightShow] = useState(null);
   const [telegramStatus, setTelegramStatus] = useState(null);
   const [isTelegramOpen, setIsTelegramOpen] = useState(false);
-  const telegramLinked = Boolean(telegramStatus?.linked);
+  const [maxStatus, setMaxStatus] = useState(null);
+  const telegramLinked = Boolean(telegramStatus?.linked || maxStatus?.linked);
   const refreshTelegram = useCallback(() => {
     apiFetchTelegramStatus()
       .then(setTelegramStatus)
       .catch(() => setTelegramStatus({ enabled: false, linked: false }));
+    apiFetchMaxStatus()
+      .then(setMaxStatus)
+      .catch(() => setMaxStatus({ enabled: false, linked: false }));
   }, []);
   useEffect(() => {
     refreshTelegram();
@@ -8851,24 +9103,25 @@ export default function App() {
       {isTelegramOpen && (
         <TelegramSheet
           status={telegramStatus}
+          maxStatus={maxStatus}
           hasGift={myGiftIds.size > 0}
           onClose={() => setIsTelegramOpen(false)}
-          onConnect={async () => {
+          onConnect={async (kind) => {
             // окно открываем сразу (в обработчике клика), иначе браузер его заблокирует
             const win = window.open("about:blank", "_blank");
             try {
-              const { url } = await apiCreateTelegramLink();
+              const { url } = await (kind === "max" ? apiCreateMaxLink() : apiCreateTelegramLink());
               if (win) win.location.href = url;
               else window.location.href = url;
-              showToast("Нажмите «Старт» в Telegram — и уведомления подключатся 🔔", "info");
+              showToast(`Нажмите «Старт» в ${kind === "max" ? "MAX" : "Telegram"} — и уведомления подключатся 🔔`, "info");
               window.setTimeout(refreshTelegram, 15000);
             } catch (err) {
               win?.close();
               showToast(err.message || "Не удалось подключить бота", "warn");
             }
           }}
-          onDisconnect={async () => {
-            await apiDeleteTelegramLink().catch(() => {});
+          onDisconnect={async (kind) => {
+            await (kind === "max" ? apiDeleteMaxLink() : apiDeleteTelegramLink()).catch(() => {});
             refreshTelegram();
           }}
         />

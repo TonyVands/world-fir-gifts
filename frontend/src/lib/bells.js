@@ -151,47 +151,51 @@ export function strikeBell(ctx, t, nominal, gain = 0.5, decay = 12, big = true) 
 }
 
 // --- бой курантов -----------------------------------------------------------
-// Четвертной перезвон: 4 «перечасных» колокола, полный час — 4 фразы.
+// Короткий перезвон звучит в последние секунды отсчёта, а ровно в 00:00
+// начинаются 12 ударов часового колокола — весь бой укладывается в ~10 с,
+// как в телетрансляции.
 const Q = { a: 659.25, b: 587.33, c: 523.25, d: 392.0 };
 const QUARTER_PHRASES = [
   [Q.a, Q.b, Q.c, Q.d],
   [Q.c, Q.a, Q.b, Q.d],
-  [Q.c, Q.b, Q.a, Q.c],
-  [Q.a, Q.c, Q.b, Q.d],
 ];
-const NOTE = 0.82;
-const PHRASE_GAP = 1.1;
-export const STRIKE_INTERVAL = 3.2;
-const AFTER_QUARTERS = 2.4;
+const NOTE = 0.5;
+const PHRASE_GAP = 0.45;
+const AFTER_QUARTERS = 0.9;
+export const STRIKE_INTERVAL = 0.9;
 const HOUR_BELL_NOMINAL = 196; // крупный часовой колокол (соль малой октавы)
 
-/** Длительность перезвона до первого удара. */
-export const QUARTERS_DURATION =
-  QUARTER_PHRASES.length * 4 * NOTE + (QUARTER_PHRASES.length - 1) * PHRASE_GAP + AFTER_QUARTERS;
-/** Шоу начинается за ~10 с до полуночи (отсчёт), куранты — в 00:00. */
+/** Сколько секунд перезвон звучит до полуночи. */
+export const QUARTERS_LEAD =
+  QUARTER_PHRASES.length * 4 * NOTE + (QUARTER_PHRASES.length - 1) * PHRASE_GAP + AFTER_QUARTERS - NOTE;
+/** Совместимость: перезвон теперь целиком до полуночи. */
+export const QUARTERS_DURATION = 0;
+/** Шоу начинается за ~10 с до полуночи (отсчёт). */
 export const CHIMES_LEAD_S = 11;
+/** Последний, 12-й удар — через столько секунд после 00:00. */
+export const LAST_STRIKE_S = 11 * STRIKE_INTERVAL;
 
 /**
- * Куранты как на Спасской башне: в tMidnight начинается перезвон,
- * затем 12 ударов часового колокола. Возвращает времена ударов.
+ * Перезвон заканчивается перед полуночью, первый удар — ровно в tMidnight.
+ * Возвращает времена 12 ударов.
  */
 export function scheduleKremlinChimes(ctx, tMidnight) {
   if (!ctx) return [];
   const now = ctx.currentTime;
-  let t = tMidnight;
+  let t = tMidnight - QUARTERS_LEAD;
   QUARTER_PHRASES.forEach((phrase, pi) => {
     phrase.forEach((f, ni) => {
-      if (t >= now - 0.02) strikeBell(ctx, Math.max(now, t), f, ni === 3 ? 0.34 : 0.28, 7, false);
+      if (t >= now - 0.02) strikeBell(ctx, Math.max(now, t), f, ni === 3 ? 0.32 : 0.26, 5, false);
       t += NOTE;
     });
     if (pi < QUARTER_PHRASES.length - 1) t += PHRASE_GAP;
   });
-  t += AFTER_QUARTERS - NOTE;
   const strikes = [];
   for (let k = 0; k < 12; k++) {
-    const ts = t + k * STRIKE_INTERVAL;
+    const ts = tMidnight + k * STRIKE_INTERVAL;
     strikes.push(ts);
-    if (ts >= now - 0.02) strikeBell(ctx, Math.max(now, ts), HOUR_BELL_NOMINAL, 0.62, 16, true);
+    // удары чуть тише и короче, чтобы не сливаться в гул при частом бое
+    if (ts >= now - 0.02) strikeBell(ctx, Math.max(now, ts), HOUR_BELL_NOMINAL, 0.46, k === 11 ? 12 : 6, true);
   }
   return strikes;
 }

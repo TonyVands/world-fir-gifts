@@ -105,6 +105,9 @@ export const fetchAchievements = () => request("/world/achievements");
 export const fetchTelegramStatus = () => request("/telegram/status");
 export const createTelegramLink = () => request("/telegram/link", { method: "POST" });
 export const deleteTelegramLink = () => request("/telegram/link", { method: "DELETE" });
+export const fetchMaxStatus = () => request("/max/status");
+export const createMaxLink = () => request("/max/link", { method: "POST" });
+export const deleteMaxLink = () => request("/max/link", { method: "DELETE" });
 
 export const fetchMyCollection = async () => {
   // на телефоне с тяжёлой 3D-сценой первый ответ может прийти позже — даём время и одну повторную попытку

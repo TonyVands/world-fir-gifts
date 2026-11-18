@@ -42,7 +42,7 @@ def _shade(rgb, k: float):
     return tuple(max(0, min(255, int(v * k))) for v in rgb)
 
 
-def _background(seed: int) -> Image.Image:
+def _background(seed: int, W: int = W, H: int = H) -> Image.Image:  # noqa: N803
     img = Image.new("RGB", (W, H), (6, 10, 24))
     px = ImageDraw.Draw(img)
     # вертикальный градиент ночного неба
@@ -50,7 +50,7 @@ def _background(seed: int) -> Image.Image:
         t = y / H
         px.line([(0, y), (W, y)], fill=(int(6 + 16 * t), int(10 + 14 * t), int(24 + 34 * t)))
     rnd = random.Random(seed)
-    for _ in range(170):
+    for _ in range(int(170 * (W * H) / (1200 * 630))):
         x, y = rnd.randrange(W), rnd.randrange(int(H * 0.8))
         b = rnd.randrange(120, 255)
         r = 1 if rnd.random() < 0.85 else 2
@@ -59,7 +59,7 @@ def _background(seed: int) -> Image.Image:
     glow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     g = ImageDraw.Draw(glow)
     palette = [(255, 196, 110), (255, 90, 90), (90, 220, 140), (110, 160, 255), (255, 120, 220)]
-    for _ in range(26):
+    for _ in range(int(26 * max(1.0, (W * H) / (1200 * 630)) ** 0.7)):
         x, y = rnd.randrange(W), rnd.randrange(int(H * 0.55), H)
         r = rnd.randrange(10, 34)
         c = palette[rnd.randrange(len(palette))]
@@ -69,31 +69,36 @@ def _background(seed: int) -> Image.Image:
     return img
 
 
-def _draw_globe(img: Image.Image, voxels: list[dict], base_rgb, glitter_rgb) -> None:
-    cx, cy, R = 330, 300, 230
+def _draw_globe(img: Image.Image, voxels: list[dict], base_rgb, glitter_rgb, cx: int = 330, cy: int = 300, R: int = 230) -> None:
+    W, H = img.size  # noqa: N806
+    k = R / 230  # все размеры — от радиуса шара
+    q = lambda v: int(round(v * k))  # noqa: E731
     layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     d = ImageDraw.Draw(layer)
     # стеклянная сфера: мягкое свечение и блик
     halo = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    ImageDraw.Draw(halo).ellipse([cx - R - 30, cy - R - 30, cx + R + 30, cy + R + 30], fill=(255, 210, 140, 55))
-    halo = halo.filter(ImageFilter.GaussianBlur(30))
+    ImageDraw.Draw(halo).ellipse([cx - R - q(30), cy - R - q(30), cx + R + q(30), cy + R + q(30)], fill=(255, 210, 140, 55))
+    halo = halo.filter(ImageFilter.GaussianBlur(q(30)))
     img.paste(halo, (0, 0), halo)
-    d.ellipse([cx - R, cy - R, cx + R, cy + R], fill=(190, 220, 255, 34), outline=(220, 235, 255, 120), width=3)
+    d.ellipse([cx - R, cy - R, cx + R, cy + R], fill=(190, 220, 255, 34), outline=(220, 235, 255, 120), width=max(2, q(3)))
 
     # подставка
-    by = cy + R - 40
-    d.ellipse([cx - 175, by - 30, cx + 175, by + 34], fill=(*_shade(base_rgb, 0.7), 255))
-    d.rectangle([cx - 175, by, cx + 175, by + 60], fill=(*_shade(base_rgb, 0.55), 255))
-    d.ellipse([cx - 175, by + 30, cx + 175, by + 92], fill=(*_shade(base_rgb, 0.45), 255))
-    d.ellipse([cx - 175, by - 30, cx + 175, by + 34], fill=(*_shade(base_rgb, 0.8), 255), outline=(240, 190, 90, 255), width=4)
+    by = cy + R - q(40)
+    bw = q(175)
+    d.ellipse([cx - bw, by - q(30), cx + bw, by + q(34)], fill=(*_shade(base_rgb, 0.7), 255))
+    d.rectangle([cx - bw, by, cx + bw, by + q(60)], fill=(*_shade(base_rgb, 0.55), 255))
+    d.ellipse([cx - bw, by + q(30), cx + bw, by + q(92)], fill=(*_shade(base_rgb, 0.45), 255))
+    d.ellipse([cx - bw, by - q(30), cx + bw, by + q(34)], fill=(*_shade(base_rgb, 0.8), 255), outline=(240, 190, 90, 255), width=max(2, q(4)))
 
     # изометрия вокселей
     vs = [v for v in voxels if isinstance(v, dict)][:520]
-    s = 21  # половина ширины ромба
-    hcube = 24
-    ox, oy = cx, by + 16
+    s = 21 * k  # половина ширины ромба
+    hcube = 24 * k
+    ox, oy = cx, by + q(16)
+
     def proj(x, y, z):
-        return ox + (x - z) * s, oy + (x + z) * s * 0.5 - y * hcube - 8 * s * 0.5 + 0
+        return ox + (x - z) * s, oy + (x + z) * s * 0.5 - y * hcube - 8 * s * 0.5
+
     # дальние — первыми
     for v in sorted(vs, key=lambda v: (v.get("x", 0) + v.get("z", 0), v.get("y", 0))):
         x, y, z = v.get("x", 0) - 3.5, v.get("y", 0), v.get("z", 0) - 3.5
@@ -106,15 +111,16 @@ def _draw_globe(img: Image.Image, voxels: list[dict], base_rgb, glitter_rgb) -> 
         d.polygon(right, fill=(*_shade(rgb, 0.88), 255))
     # блёстки
     rnd = random.Random(len(vs))
+    gr = max(2, q(2))
     for _ in range(40):
         a = rnd.random() * math.tau
-        r = rnd.random() * (R - 30)
-        x, y = cx + math.cos(a) * r, cy - 40 + math.sin(a) * r * 0.8
-        d.ellipse([x - 2, y - 2, x + 2, y + 2], fill=(*glitter_rgb, 220))
+        r = rnd.random() * (R - q(30))
+        x, y = cx + math.cos(a) * r, cy - q(40) + math.sin(a) * r * 0.8
+        d.ellipse([x - gr, y - gr, x + gr, y + gr], fill=(*glitter_rgb, 220))
     # блик на стекле
     shine = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    ImageDraw.Draw(shine).ellipse([cx - R + 40, cy - R + 30, cx - R + 120, cy - R + 150], fill=(255, 255, 255, 60))
-    shine = shine.filter(ImageFilter.GaussianBlur(12))
+    ImageDraw.Draw(shine).ellipse([cx - R + q(40), cy - R + q(30), cx - R + q(120), cy - R + q(150)], fill=(255, 255, 255, 60))
+    shine = shine.filter(ImageFilter.GaussianBlur(q(12)))
     layer.paste(shine, (0, 0), shine)
     img.paste(layer, (0, 0), layer)
 
@@ -141,15 +147,27 @@ def _wrap(draw: ImageDraw.ImageDraw, text: str, font, max_w: int, max_lines: int
     return lines
 
 
+def _base_rgb(snow: dict):
+    return {"mahogany": (110, 44, 20), "brass": (176, 128, 52), "obsidian": (40, 44, 58), "birch": (214, 196, 160)}.get(
+        snow.get("base_material"), (110, 44, 20)
+    )
+
+
+def _remember(cache_key: str | None, data: bytes) -> bytes:
+    if cache_key:
+        _cache[cache_key] = data
+        if len(_cache) > _CACHE_MAX:
+            _cache.popitem(last=False)
+    return data
+
+
 def render_gift_card(gift: dict, cache_key: str | None = None) -> bytes:
     if cache_key and cache_key in _cache:
         _cache.move_to_end(cache_key)
         return _cache[cache_key]
     snow = gift.get("snowglobe") or {}
     card = gift.get("card_preview") or {}
-    base_rgb = {"mahogany": (110, 44, 20), "brass": (176, 128, 52), "obsidian": (40, 44, 58), "birch": (214, 196, 160)}.get(
-        snow.get("base_material"), (110, 44, 20)
-    )
+    base_rgb = _base_rgb(snow)
     img = _background(abs(hash(gift.get("id", ""))) % 10_000)
     _draw_globe(img, snow.get("voxels") or [], base_rgb, _hex(snow.get("glitter_color", "#fde047")))
 
@@ -178,12 +196,7 @@ def render_gift_card(gift: dict, cache_key: str | None = None) -> bytes:
 
     buf = io.BytesIO()
     img.save(buf, "PNG", optimize=True)
-    data = buf.getvalue()
-    if cache_key:
-        _cache[cache_key] = data
-        if len(_cache) > _CACHE_MAX:
-            _cache.popitem(last=False)
-    return data
+    return _remember(cache_key, buf.getvalue())
 
 
 @lru_cache(maxsize=1)
@@ -217,3 +230,59 @@ def render_site_card() -> bytes:
     buf = io.BytesIO()
     img.save(buf, "PNG", optimize=True)
     return buf.getvalue()
+
+
+SW, SH = 1080, 1920  # сторис 9:16
+
+
+def render_gift_story(gift: dict, site_host: str = "", cache_key: str | None = None, own: bool = True) -> bytes:
+    """Вертикальная картинка для сторис (Instagram, ВКонтакте, Telegram, MAX).
+
+    Сверху — приглашение, в центре — шар, снизу — свободное место под
+    стикер-ссылку и короткий адрес, чтобы его можно было набрать вручную.
+    """
+    if cache_key and cache_key in _cache:
+        _cache.move_to_end(cache_key)
+        return _cache[cache_key]
+    snow = gift.get("snowglobe") or {}
+    card = gift.get("card_preview") or {}
+    img = _background(abs(hash(gift.get("id", ""))) % 10_000, SW, SH)
+    d = ImageDraw.Draw(img)
+    cx = SW // 2
+
+    d.text((cx, 170), "ВСЕМИРНАЯ ЁЛКА ПОДАРКОВ", font=_font("DejaVuSans-Bold.ttf", 34), fill=(251, 191, 36), anchor="mm")
+    head = _font("DejaVuSerif-Bold.ttf", 78)
+    y = 270
+    for line in (["Я повесил шар", "на Всемирную ёлку"] if own else ["Смотрите, какой шар", "на Всемирной ёлке"]):
+        d.text((cx, y), line, font=head, fill=(254, 243, 199), anchor="mm")
+        y += 96
+
+    _draw_globe(img, snow.get("voxels") or [], _base_rgb(snow), _hex(snow.get("glitter_color", "#fde047")), cx=cx, cy=900, R=400)
+    d = ImageDraw.Draw(img)
+
+    title = str(card.get("teaser_tag") or "Хрустальный шар")
+    tfont = _font("DejaVuSerif-Bold.ttf", 64)
+    y = 1420
+    for line in _wrap(d, f"«{title}»", tfont, SW - 160, 2):
+        d.text((cx, y), line, font=tfont, fill=(254, 243, 199), anchor="mm")
+        y += 80
+    who = " · ".join(p for p in (str(card.get("author_display_name") or ""), str(card.get("city") or "")) if p)
+    if who:
+        f = _font("DejaVuSans.ttf", 38)
+        for line in _wrap(d, who, f, SW - 160, 1):
+            d.text((cx, y + 4), line, font=f, fill=(148, 163, 184), anchor="mm")
+        y += 64
+    candles = int(gift.get("candles_count") or 0)
+    if candles > 1:
+        d.text((cx, y + 10), f"Уже горит свечей: {candles}", font=_font("DejaVuSans.ttf", 36), fill=(253, 224, 71), anchor="mm")
+
+    # призыв + адрес; выше нижних ~250 px, которые закрывают кнопки сторис
+    by = 1640
+    d.rounded_rectangle([cx - 390, by, cx + 390, by + 108], radius=54, fill=(252, 211, 77))
+    d.text((cx, by + 54), "Зажги свечу моему шару" if own else "Зажги свечу этому шару", font=_font("DejaVuSans-Bold.ttf", 42), fill=(15, 23, 42), anchor="mm")
+    if site_host:
+        d.text((cx, by + 160), site_host, font=_font("DejaVuSans.ttf", 30), fill=(203, 213, 225), anchor="mm")
+
+    buf = io.BytesIO()
+    img.save(buf, "PNG", optimize=True)
+    return _remember(cache_key, buf.getvalue())
