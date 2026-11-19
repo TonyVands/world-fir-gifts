@@ -70,7 +70,11 @@ Amvera монтирует туда постоянное хранилище (`run
 3. В приложении задайте секрет
    `WORLD_FIR_DATABASE_URL=postgresql://<user>:<password>@amvera-<username>-cnpg-<project>-rw:5432/<db>`.
    Именно `WORLD_FIR_DATABASE_URL`: платформенный `DATABASE_URL` entrypoint намеренно игнорирует.
-4. Перенесите данные: `pg_dump` из старого контейнера → `psql` в кластер.
+4. Данные переносятся сами (v17.4.1): при первом старте с `WORLD_FIR_DATABASE_URL`
+   entrypoint поднимает старую встроенную базу, снимает дамп и заливает его во
+   внешнюю, если там ещё нет шаров. В логе: `[migrate] Готово: перенесено шаров — N`.
+   Копия дампа — `/data/backups/premigrate_*.sql.gz`, подробности — `/data/migrate.log`.
+   Повторно перенос не запускается (маркер `/data/.migrated_to_external`).
 5. После переезда встроенный Postgres не запускается, бэкапы делает Amvera.
    Несколько реплик всё равно не включайте, пока rate limit и кеш живут в памяти (нужен Redis).
 

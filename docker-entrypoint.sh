@@ -38,6 +38,54 @@ trap term_handler TERM INT
 # DATABASE_URL всегда перезаписывается корректным значением.
 EXTERNAL_DB_URL="${WORLD_FIR_DATABASE_URL:-}"
 
+# Однократный перенос данных из встроенного PostgreSQL во внешнюю БД.
+# Срабатывает, когда задан WORLD_FIR_DATABASE_URL, в /data лежит старая база,
+# а во внешней ещё нет шаров. Старые файлы не удаляются (остаются архивом),
+# маркер /data/.migrated_to_external не даёт перенести дважды.
+migrate_embedded_to_external() {
+    local marker="${MIGRATE_MARKER:-/data/.migrated_to_external}"
+    local psql_url="${EXTERNAL_DB_URL/postgresql+asyncpg:\/\//postgresql:\/\/}"
+    psql_url="${psql_url/postgres:\/\//postgresql:\/\/}"
+    if [ -f "$marker" ] || [ ! -s "$PGDATA/PG_VERSION" ] || [ -z "$PGBIN" ]; then
+        return 0
+    fi
+    local count
+    count="$("$PGBIN/psql" "$psql_url" -tAc "select count(*) from gifts" 2>/dev/null || echo "none")"
+    if [ "$count" != "none" ] && [ "$count" != "0" ]; then
+        echo "[migrate] Во внешней БД уже есть шары ($count) — перенос не нужен."
+        date -u +%FT%TZ > "$marker"
+        return 0
+    fi
+    echo "[migrate] Переносим шары из встроенной базы во внешнюю…"
+    chown -R postgres:postgres "$PGDATA"
+    touch "$PGLOG" && chown postgres:postgres "$PGLOG"
+    su postgres -s /bin/sh -c \
+        "'$PGBIN/pg_ctl' -D '$PGDATA' -l '$PGLOG' -o \"-p $PGPORT -k /tmp -c listen_addresses=127.0.0.1\" -w -t 60 start" || return 1
+    local dump="/data/backups/premigrate_$(date -u +%Y%m%dT%H%M%SZ).sql"
+    mkdir -p /data/backups
+    local ok=1
+    if "$PGBIN/pg_dump" -h 127.0.0.1 -p "$PGPORT" -U "$DB_USER" --no-owner --no-privileges "$DB_NAME" > "$dump"; then
+        # ошибки совместимости версий (SET-параметры) не критичны — проверяем результат ниже
+        "$PGBIN/psql" "$psql_url" -q -v ON_ERROR_STOP=0 -f "$dump" > /data/migrate.log 2>&1 || true
+        local src dst
+        src="$("$PGBIN/psql" -h 127.0.0.1 -p "$PGPORT" -U "$DB_USER" "$DB_NAME" -tAc "select count(*) from gifts" 2>/dev/null || echo "?")"
+        dst="$("$PGBIN/psql" "$psql_url" -tAc "select count(*) from gifts" 2>/dev/null || echo "!")"
+        if [ "$src" = "$dst" ]; then
+            echo "[migrate] Готово: перенесено шаров — $dst. Копия: $dump"
+            date -u +%FT%TZ > "$marker"
+            gzip -f "$dump" || true
+        else
+            echo "[migrate] ОШИБКА: в старой базе $src шаров, во внешней $dst. Подробности: /data/migrate.log" >&2
+            ok=0
+        fi
+    else
+        echo "[migrate] ОШИБКА: не удалось снять дамп со встроенной базы" >&2
+        ok=0
+    fi
+    su postgres -s /bin/sh -c "'$PGBIN/pg_ctl' -D '$PGDATA' -m fast -w stop" >/dev/null 2>&1 || true
+    [ "$ok" = "1" ]
+}
+
 if [ -z "$EXTERNAL_DB_URL" ]; then
     if [ -z "$PGBIN" ]; then
         echo "[entrypoint] ОШИБКА: сервер PostgreSQL не найден в образе" >&2
@@ -99,6 +147,7 @@ if [ -z "$EXTERNAL_DB_URL" ]; then
 else
     export DATABASE_URL="$EXTERNAL_DB_URL"
     echo "[entrypoint] Используется внешняя БД (WORLD_FIR_DATABASE_URL)."
+    migrate_embedded_to_external || echo "[migrate] Перенос не выполнен — приложение стартует с тем, что есть во внешней БД." >&2
 fi
 
 cd /app
