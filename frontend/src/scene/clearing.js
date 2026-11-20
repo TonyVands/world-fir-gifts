@@ -308,11 +308,14 @@ export function createClearing({ foliage, isMobile = false }) {
   group.add(curb);
 
   const outerLanterns = [];
+  // препятствия для жителей площади: фонари, скамейки, домики
+  const obstacles = [];
   const outerLanternCount = isMobile ? 8 : 12;
   for (let i = 0; i < outerLanternCount; i++) {
     const a = (i / outerLanternCount) * Math.PI * 2 + 0.13;
     const l = buildLantern({ withLight: false });
     l.group.position.set(Math.cos(a) * (PLAZA_R - 2.5), SNOW_Y, Math.sin(a) * (PLAZA_R - 2.5));
+    obstacles.push({ x: l.group.position.x, z: l.group.position.z, r: 0.8 });
     l.group.rotation.y = -a;
     group.add(l.group);
     outerLanterns.push(l);
@@ -324,6 +327,7 @@ export function createClearing({ foliage, isMobile = false }) {
     const b = buildBench();
     const r = 31;
     b.position.set(Math.cos(a) * r, SNOW_Y, Math.sin(a) * r);
+    obstacles.push({ x: b.position.x, z: b.position.z, r: 1.9 });
     b.lookAt(0, SNOW_Y, 0);
     b.rotateY(Math.PI);
     group.add(b);
@@ -351,6 +355,7 @@ export function createClearing({ foliage, isMobile = false }) {
     l.group.rotation.y = -a;
     group.add(l.group);
     lanterns.push(l);
+    obstacles.push({ x: l.group.position.x, z: l.group.position.z, r: 1.6 });
   }
 
   // Мягкие сугробы: у подножия ели, вокруг фонарей и по поляне
@@ -404,6 +409,7 @@ export function createClearing({ foliage, isMobile = false }) {
     group,
     lanterns: [...lanterns, ...glowAll],
     plazaRadius: PLAZA_R,
+    obstacles,
     stats: { forestSprays: forestSprays.length, trees: treeCount },
     dispose() {
       cobbleTex.dispose();

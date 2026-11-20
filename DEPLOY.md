@@ -163,3 +163,11 @@ curl -X POST "https://<домен>/api/gifts/<gift_id>/quarantine" -H "X-Admin-T
 * **MAX:** в кабинете партнёра MAX добавьте мини-приложение с адресом сайта.
 
 Встраивание разрешено только веб-версиям Telegram и MAX (`frame-ancestors` в CSP).
+
+## Жители площади (v18.0)
+
+Реалистичные модели людей, андроида и зверей — Grab3D (grab3d.com), лицензия CC0.
+Лежат в `frontend/public/models/residents/*.glb`, сжаты glTF-Transform
+(упрощение геометрии + meshopt + текстуры WebP 512 px), всего ≈ 9 МБ.
+Грузятся после ёлки; на телефоне — облегчённый набор (≈ 3–4 МБ).
+Для распаковки meshopt нужен `'wasm-unsafe-eval'` в CSP, для текстур — `blob:` в connect-src.

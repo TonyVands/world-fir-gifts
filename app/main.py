@@ -24,7 +24,7 @@ from app.services.seeder import seed_initial_gifts
 
 logger = logging.getLogger("uvicorn.error")
 
-API_VERSION = "17.6.1"
+API_VERSION = "18.0.0"
 
 
 async def _rotate_and_check_contacts() -> None:
@@ -120,12 +120,14 @@ app.add_middleware(GZipMiddleware, minimum_size=1024)
 _CSP = "; ".join(
     [
         "default-src 'self'",
-        "script-src 'self' https://telegram.org",  # SDK мини-приложения Telegram (грузится только внутри Telegram)
+        # SDK мини-приложения Telegram; 'wasm-unsafe-eval' — только для WebAssembly
+        # (распаковщик 3D-моделей жителей), обычный eval по-прежнему запрещён
+        "script-src 'self' 'wasm-unsafe-eval' https://telegram.org",
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
         "font-src 'self' data: https://fonts.gstatic.com",
         "img-src 'self' data: blob:",
         "media-src 'self' data: blob:",
-        "connect-src 'self' ws: wss:",
+        "connect-src 'self' ws: wss: blob: data:",  # текстуры внутри .glb читаются через blob:
         "worker-src 'self' blob:",
         "object-src 'none'",
         "base-uri 'self'",
@@ -216,6 +218,9 @@ if STATIC_DIR.is_dir():
             candidate = (STATIC_DIR / full_path).resolve()
             # Защита от path traversal: отдаём только файлы ВНУТРИ static/.
             if candidate.is_file() and candidate.is_relative_to(STATIC_DIR):
+                # 3D-модели и панорамы тяжёлые и меняются редко — пусть браузер их кеширует
+                if candidate.suffix in (".glb", ".hdr", ".exr"):
+                    return FileResponse(candidate, headers={"Cache-Control": "public, max-age=604800"})
                 return FileResponse(candidate)
         # Ссылка на шар (/g/<id> или /?gift=<id>) получает своё превью в мессенджерах.
         gift_id = request.query_params.get("gift")

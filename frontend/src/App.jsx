@@ -9,8 +9,8 @@ import { HorizontalTiltShiftShader } from "three/examples/jsm/shaders/Horizontal
 import { VerticalTiltShiftShader } from "three/examples/jsm/shaders/VerticalTiltShiftShader.js";
 import { createRealisticFir, createCapLoopGeometry } from "./scene/realisticFir.js";
 import { createClearing } from "./scene/clearing.js";
-import { createResidents } from "./scene/residents.js";
-import { mulberry32, SNOW_Y } from "./scene/realisticFir.js";
+import { createRealResidents } from "./scene/realResidents.js";
+import { SNOW_Y } from "./scene/realisticFir.js";
 import { TIME_OF_DAY, WEATHER_PRESETS, createAtmosphereController } from "./scene/atmosphere.js";
 import { createFireworks3D } from "./scene/fireworks3d.js";
 import { CHIMES_LEAD_S } from "./lib/bells.js";
@@ -7521,13 +7521,13 @@ export default function App() {
       clearing = createClearing({ foliage: fir.foliage, isMobile: isMobileGpu });
       scene.add(clearing.group);
 
-      // Жители площади: люди, роботы, звери и птицы гуляют вокруг Ёлки
-      residents = createResidents({
-        rnd: mulberry32(2027),
+      // Жители площади (реалистичные модели): грузятся после ёлки, не мешая ей
+      residents = createRealResidents({
         groundY: SNOW_Y + 0.04,
-        innerR: 25,
-        outerR: clearing.plazaRadius - 6,
+        innerR: 28,
+        outerR: clearing.plazaRadius - 7,
         isMobile: isMobileGpu,
+        obstacles: [...clearing.obstacles],
       });
       scene.add(residents.group);
 
