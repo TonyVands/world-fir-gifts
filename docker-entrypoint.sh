@@ -86,6 +86,20 @@ migrate_embedded_to_external() {
     [ "$ok" = "1" ]
 }
 
+# Если задана внешняя база — сначала проверяем, что она доступна. Неверный
+# адрес или неотвечающий кластер не должны ронять сайт: тогда работаем на
+# встроенной базе (шары на месте) и громко пишем об ошибке в лог.
+if [ -n "$EXTERNAL_DB_URL" ]; then
+    ext_psql_url="${EXTERNAL_DB_URL/postgresql+asyncpg:\/\//postgresql:\/\/}"
+    ext_psql_url="${ext_psql_url/postgres:\/\//postgresql:\/\/}"
+    ext_host="$(printf '%s' "$ext_psql_url" | sed -E 's#^[a-z+]+://([^@/]*@)?([^:/?]+).*#\2#')"
+    if [ -n "$PGBIN" ] && ! PGCONNECT_TIMEOUT=8 "$PGBIN/psql" "$ext_psql_url" -tAc "select 1" >/tmp/ext_check.log 2>&1; then
+        echo "[entrypoint] ОШИБКА: внешняя БД недоступна (хост «$ext_host»): $(tail -n 1 /tmp/ext_check.log)" >&2
+        echo "[entrypoint] Проверьте WORLD_FIR_DATABASE_URL. Пока работаем на встроенной базе — шары на месте." >&2
+        EXTERNAL_DB_URL=""
+    fi
+fi
+
 if [ -z "$EXTERNAL_DB_URL" ]; then
     if [ -z "$PGBIN" ]; then
         echo "[entrypoint] ОШИБКА: сервер PostgreSQL не найден в образе" >&2
@@ -146,7 +160,7 @@ if [ -z "$EXTERNAL_DB_URL" ]; then
     fi
 else
     export DATABASE_URL="$EXTERNAL_DB_URL"
-    echo "[entrypoint] Используется внешняя БД (WORLD_FIR_DATABASE_URL)."
+    echo "[entrypoint] Используется внешняя БД (WORLD_FIR_DATABASE_URL, хост «$ext_host»)."
     migrate_embedded_to_external || echo "[migrate] Перенос не выполнен — приложение стартует с тем, что есть во внешней БД." >&2
 fi
 
