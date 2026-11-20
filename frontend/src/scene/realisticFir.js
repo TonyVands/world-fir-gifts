@@ -7,6 +7,7 @@
 // Всё генерируется в браузере — никаких внешних файлов и лицензий.
 // ============================================================================
 import * as THREE from "three";
+import { createOrnaments } from "./ornaments.js";
 
 const TREE_TOP_Y = 59.0;
 const GROUND_Y = -4.0;
@@ -685,6 +686,9 @@ export function createRealisticFir({ isMobile = false } = {}) {
     if (decorMesh.instanceColor) decorMesh.instanceColor.needsUpdate = true;
   };
   placeDecor([]);
+  // Объёмные игрушки: классика и «ручная работа» (шишки, пряники, вязаные варежки…)
+  const ornaments = createOrnaments({ rnd: mulberry32(31), envelopeRadius, isMobile });
+  group.add(ornaments.group);
   decorMesh.frustumCulled = false;
   decorCaps.frustumCulled = false;
   group.add(decorMesh, decorCaps);
@@ -729,6 +733,7 @@ export function createRealisticFir({ isMobile = false } = {}) {
     });
     giftGroup.clear();
     placeDecor(hangers || []);
+    ornaments.place(hangers || []);
     if (!hangers || hangers.length === 0) return;
 
     const hRnd = mulberry32(hangers.length * 7919);
@@ -784,7 +789,7 @@ export function createRealisticFir({ isMobile = false } = {}) {
     group,
     uniforms,
     setGiftHangers,
-    stats: { sprays: sprays.length, snow: snows.length, branches: twigs.length },
+    stats: { sprays: sprays.length, snow: snows.length, branches: twigs.length, ornaments: ornaments.stats },
     /** 0.4..1 — доля отрисовываемой хвои и снега (адаптивное качество). */
     setQuality(q) {
       const k = Math.max(0.4, Math.min(1, q));
@@ -821,6 +826,7 @@ export function createRealisticFir({ isMobile = false } = {}) {
       sprayTex.dispose();
       snowTex.dispose();
       glowTex.dispose();
+      ornaments.dispose();
       bokehTex.dispose();
     },
   };

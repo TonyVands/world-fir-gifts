@@ -9,6 +9,8 @@ import { HorizontalTiltShiftShader } from "three/examples/jsm/shaders/Horizontal
 import { VerticalTiltShiftShader } from "three/examples/jsm/shaders/VerticalTiltShiftShader.js";
 import { createRealisticFir, createCapLoopGeometry } from "./scene/realisticFir.js";
 import { createClearing } from "./scene/clearing.js";
+import { createResidents } from "./scene/residents.js";
+import { mulberry32, SNOW_Y } from "./scene/realisticFir.js";
 import { TIME_OF_DAY, WEATHER_PRESETS, createAtmosphereController } from "./scene/atmosphere.js";
 import { createFireworks3D } from "./scene/fireworks3d.js";
 import { CHIMES_LEAD_S } from "./lib/bells.js";
@@ -7470,6 +7472,7 @@ export default function App() {
     // ======================================================================
     let fir = null;
     let clearing = null;
+    let residents = null;
     let atmosphere = null;
     let fireworks3d = null;
     let lastElapsed = 0;
@@ -7517,6 +7520,16 @@ export default function App() {
       clearingGroup.visible = false;
       clearing = createClearing({ foliage: fir.foliage, isMobile: isMobileGpu });
       scene.add(clearing.group);
+
+      // Жители площади: люди, роботы, звери и птицы гуляют вокруг Ёлки
+      residents = createResidents({
+        rnd: mulberry32(2027),
+        groundY: SNOW_Y + 0.04,
+        innerR: 25,
+        outerR: clearing.plazaRadius - 6,
+        isMobile: isMobileGpu,
+      });
+      scene.add(residents.group);
 
       // Шары — как настоящие ёлочные игрушки: без пьедестала и «пики»-свечи,
       // с классическим колпачком и петелькой, за которую они подвешены на нити
@@ -7619,7 +7632,7 @@ export default function App() {
         snowPointsMat.size *= 0.45;
         snowPointsMat.opacity = Math.min(snowPointsMat.opacity ?? 1, 0.6);
       }
-      console.info("[WorldFir] Новый облик:", fir.stats, clearing.stats);
+      console.info("[WorldFir] Новый облик:", fir.stats, clearing.stats, residents.stats);
     }
 
     const clampZoom = (z) => Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, z));
@@ -7797,6 +7810,7 @@ export default function App() {
         fir.update(elapsed);
         atmosphere?.update(Math.min(0.1, elapsed - lastElapsed), elapsed);
         fireworks3d?.update(Math.min(0.1, elapsed - lastElapsed));
+        residents?.update(elapsed, elapsed - lastElapsed);
         lastElapsed = elapsed;
         if (!perf.done) {
           if (elapsed > 2.5) {
@@ -8041,6 +8055,7 @@ export default function App() {
         firApiRef.current = null;
       }
       if (clearing) clearing.dispose();
+      if (residents) residents.dispose();
       if (atmosphere) {
         atmosphere.dispose();
         atmosphereRef.current = null;

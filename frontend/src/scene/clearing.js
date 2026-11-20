@@ -49,7 +49,7 @@ function growBackgroundFir({ origin, height, rnd, push }) {
   }
 }
 
-function buildLantern() {
+function buildLantern({ withLight = true } = {}) {
   const g = new THREE.Group();
   const iron = new THREE.MeshStandardMaterial({ color: "#1a1d24", metalness: 0.75, roughness: 0.38 });
   const snow = new THREE.MeshStandardMaterial({ color: "#eef3ff", roughness: 0.6 });
@@ -99,18 +99,137 @@ function buildLantern() {
   head.add(bottom, roof, roofSnow, finial);
   g.add(head);
 
-  const light = new THREE.PointLight("#ffb35c", 30, 26, 2);
-  light.position.y = 6.45;
-  g.add(light);
+  const light = withLight ? new THREE.PointLight("#ffb35c", 30, 26, 2) : null;
+  if (light) {
+    light.position.y = 6.45;
+    g.add(light);
+  }
 
   return {
     group: g,
     setGlow(k) {
       glassMat.emissiveIntensity = 0.15 + 2.1 * k;
-      light.intensity = 30 * k;
-      light.visible = k > 0.02;
+      if (light) {
+        light.intensity = 30 * k;
+        light.visible = k > 0.02;
+      }
     },
   };
+}
+
+const PLAZA_R = 54;
+
+// Брусчатка с инеем: неровные камни, тёмные швы, снег в щелях
+function makeCobbleTexture() {
+  const c = document.createElement("canvas");
+  c.width = c.height = 512;
+  const g = c.getContext("2d");
+  g.fillStyle = "#3b3a3f";
+  g.fillRect(0, 0, 512, 512);
+  const rnd = mulberry32(77);
+  const rows = 16;
+  const h = 512 / rows;
+  for (let r = 0; r < rows; r++) {
+    let x = r % 2 ? -h * 0.5 : 0;
+    while (x < 512) {
+      const w = h * (0.9 + rnd() * 0.7);
+      const tone = 108 + Math.floor(rnd() * 46);
+      const warm = Math.floor(rnd() * 12);
+      g.fillStyle = `rgb(${tone + warm},${tone + Math.floor(warm / 2)},${tone - 4})`;
+      g.beginPath();
+      g.roundRect(x + 2, r * h + 2, w - 4, h - 4, 7);
+      g.fill();
+      // иней на камне
+      if (rnd() < 0.35) {
+        g.fillStyle = `rgba(240,244,252,${0.25 + rnd() * 0.4})`;
+        g.beginPath();
+        g.ellipse(x + w * (0.3 + rnd() * 0.4), r * h + h * 0.5, w * 0.35, h * 0.28, 0, 0, Math.PI * 2);
+        g.fill();
+      }
+      x += w;
+    }
+  }
+  // снег, наметённый в швы
+  g.strokeStyle = "rgba(235,240,250,0.35)";
+  g.lineWidth = 2;
+  for (let r = 0; r <= rows; r++) {
+    g.beginPath();
+    g.moveTo(0, r * h);
+    g.lineTo(512, r * h);
+    g.stroke();
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(22, 22);
+  t.anisotropy = 8;
+  return t;
+}
+
+// Ярмарочный домик: деревянный сруб, полосатая крыша, тёплый свет в окне
+function buildStall(rnd) {
+  const g = new THREE.Group();
+  const wood = new THREE.MeshStandardMaterial({ color: "#6b4426", roughness: 0.85 });
+  const woodDark = new THREE.MeshStandardMaterial({ color: "#4a2d18", roughness: 0.9 });
+  const roofCol = ["#b91c1c", "#166534", "#1e3a8a", "#92400e"][Math.floor(rnd() * 4)];
+  const roof = new THREE.MeshStandardMaterial({ color: roofCol, roughness: 0.7 });
+  const snow = new THREE.MeshStandardMaterial({ color: "#f1f5fb", roughness: 0.6 });
+  const glow = new THREE.MeshStandardMaterial({ color: "#ffd59a", emissive: "#ffae4d", emissiveIntensity: 1.6 });
+  const base = new THREE.Mesh(new THREE.BoxGeometry(5, 3.2, 3.2), wood);
+  base.position.y = 1.6;
+  const counter = new THREE.Mesh(new THREE.BoxGeometry(5.3, 0.25, 1), woodDark);
+  counter.position.set(0, 1.35, 1.9);
+  const window_ = new THREE.Mesh(new THREE.PlaneGeometry(4, 1.5), glow);
+  window_.position.set(0, 2.2, 1.61);
+  const roofL = new THREE.Mesh(new THREE.BoxGeometry(5.8, 0.18, 2.4), roof);
+  roofL.position.set(0, 3.85, 0.85);
+  roofL.rotation.x = -0.6;
+  const roofR = roofL.clone();
+  roofR.position.z = -0.85;
+  roofR.rotation.x = 0.6;
+  const ridgeSnow = new THREE.Mesh(new THREE.BoxGeometry(5.9, 0.12, 2.0), snow);
+  ridgeSnow.position.set(0, 3.98, 0.75);
+  ridgeSnow.rotation.x = -0.6;
+  const ridgeSnow2 = ridgeSnow.clone();
+  ridgeSnow2.position.z = -0.75;
+  ridgeSnow2.rotation.x = 0.6;
+  for (const x of [-2.4, 2.4]) {
+    const post = new THREE.Mesh(new THREE.BoxGeometry(0.22, 3.6, 0.22), woodDark);
+    post.position.set(x, 1.8, 1.65);
+    g.add(post);
+  }
+  g.add(base, counter, window_, roofL, roofR, ridgeSnow, ridgeSnow2);
+  return { group: g, glowMat: glow };
+}
+
+// Скамейка: доски и чугунные ножки
+function buildBench() {
+  const g = new THREE.Group();
+  const wood = new THREE.MeshStandardMaterial({ color: "#7c4f2c", roughness: 0.8 });
+  const iron = new THREE.MeshStandardMaterial({ color: "#1f2328", metalness: 0.7, roughness: 0.4 });
+  for (let i = 0; i < 3; i++) {
+    const seat = new THREE.Mesh(new THREE.BoxGeometry(3.2, 0.1, 0.22), wood);
+    seat.position.set(0, 0.9, -0.25 + i * 0.25);
+    g.add(seat);
+  }
+  for (let i = 0; i < 2; i++) {
+    const back = new THREE.Mesh(new THREE.BoxGeometry(3.2, 0.2, 0.08), wood);
+    back.position.set(0, 1.3 + i * 0.3, -0.42);
+    back.rotation.x = -0.15;
+    g.add(back);
+  }
+  for (const x of [-1.4, 1.4]) {
+    const leg = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.9, 0.7), iron);
+    leg.position.set(x, 0.45, -0.1);
+    g.add(leg);
+  }
+  const snowCap = new THREE.Mesh(
+    new THREE.BoxGeometry(3.1, 0.06, 0.6),
+    new THREE.MeshStandardMaterial({ color: "#f1f5fb", roughness: 0.6 })
+  );
+  snowCap.position.set(0, 0.98, 0);
+  g.add(snowCap);
+  return g;
 }
 
 export function createClearing({ foliage, isMobile = false }) {
@@ -168,6 +287,60 @@ export function createClearing({ foliage, isMobile = false }) {
   forestMesh.frustumCulled = false;
   group.add(forestMesh);
 
+  // Площадь Ёлки мира: брусчатка с инеем, гранитный бордюр, скамейки,
+  // фонари по кругу и ярмарочные домики. Всё в меру — главное здесь ёлка.
+  const cobbleTex = makeCobbleTexture();
+  const plaza = new THREE.Mesh(
+    new THREE.CircleGeometry(PLAZA_R, 96),
+    new THREE.MeshStandardMaterial({ map: cobbleTex, roughness: 0.78, metalness: 0.05, color: "#d9d4cf" })
+  );
+  plaza.rotation.x = -Math.PI / 2;
+  plaza.position.y = SNOW_Y + 0.03;
+  plaza.receiveShadow = true;
+  group.add(plaza);
+  const curb = new THREE.Mesh(
+    new THREE.TorusGeometry(PLAZA_R + 0.3, 0.45, 6, 160),
+    new THREE.MeshStandardMaterial({ color: "#8b8f97", roughness: 0.7 })
+  );
+  curb.rotation.x = Math.PI / 2;
+  curb.scale.z = 0.55;
+  curb.position.y = SNOW_Y + 0.1;
+  group.add(curb);
+
+  const outerLanterns = [];
+  const outerLanternCount = isMobile ? 8 : 12;
+  for (let i = 0; i < outerLanternCount; i++) {
+    const a = (i / outerLanternCount) * Math.PI * 2 + 0.13;
+    const l = buildLantern({ withLight: false });
+    l.group.position.set(Math.cos(a) * (PLAZA_R - 2.5), SNOW_Y, Math.sin(a) * (PLAZA_R - 2.5));
+    l.group.rotation.y = -a;
+    group.add(l.group);
+    outerLanterns.push(l);
+  }
+
+  const benchCount = isMobile ? 6 : 8;
+  for (let i = 0; i < benchCount; i++) {
+    const a = (i / benchCount) * Math.PI * 2 + Math.PI / benchCount;
+    const b = buildBench();
+    const r = 31;
+    b.position.set(Math.cos(a) * r, SNOW_Y, Math.sin(a) * r);
+    b.lookAt(0, SNOW_Y, 0);
+    b.rotateY(Math.PI);
+    group.add(b);
+  }
+
+  const stalls = [];
+  const stallCount = isMobile ? 4 : 6;
+  for (let i = 0; i < stallCount; i++) {
+    const a = (i / stallCount) * Math.PI * 2 + 0.5;
+    const st = buildStall(rnd);
+    const r = PLAZA_R + 5;
+    st.group.position.set(Math.cos(a) * r, SNOW_Y, Math.sin(a) * r);
+    st.group.lookAt(0, SNOW_Y, 0);
+    group.add(st.group);
+    stalls.push(st);
+  }
+
   // Фонари вокруг ели (дальше, чем нижние лапы)
   const lanterns = [];
   for (let i = 0; i < 4; i++) {
@@ -207,7 +380,7 @@ export function createClearing({ foliage, isMobile = false }) {
       sc = 0.7 + rnd() * 0.9;
     } else {
       const a = rnd() * Math.PI * 2;
-      const r = 30 + rnd() * 60;
+      const r = PLAZA_R + 8 + rnd() * 50;
       x = Math.cos(a) * r;
       z = Math.sin(a) * r;
       sc = 1.5 + rnd() * 4;
@@ -222,11 +395,18 @@ export function createClearing({ foliage, isMobile = false }) {
   mounds.receiveShadow = true;
   group.add(mounds);
 
+  // дальние фонари и окна ярмарки горят вместе с ближними фонарями
+  const glowAll = [
+    ...outerLanterns,
+    ...stalls.map((st) => ({ setGlow: (k) => (st.glowMat.emissiveIntensity = 0.2 + 1.6 * k) })),
+  ];
   return {
     group,
-    lanterns,
+    lanterns: [...lanterns, ...glowAll],
+    plazaRadius: PLAZA_R,
     stats: { forestSprays: forestSprays.length, trees: treeCount },
     dispose() {
+      cobbleTex.dispose();
       group.traverse((o) => {
         o.geometry?.dispose?.();
         if (o.material && o.material !== foliage.sprayMat) [].concat(o.material).forEach((m) => m.dispose());
