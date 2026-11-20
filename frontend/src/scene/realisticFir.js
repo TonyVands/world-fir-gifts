@@ -389,10 +389,11 @@ export function createRealisticFir({ isMobile = false } = {}) {
   const color = new THREE.Color();
   // Множитель к зелёной текстуре: у ствола ~0.35 (тень кроны), на кончиках ~1.7.
   // Лёгкий сдвиг оттенка: глубина — холоднее, молодые кончики — теплее и желтее.
+  // Тёплый облик: хвоя сочнее и светлее, кончики — с золотистым отливом гирлянды
   const foliageTint = (b, r, out) => {
-    const k = 0.32 + 1.4 * Math.pow(b, 1.15);
-    const warm = Math.max(0, b - 0.75) * 0.6;
-    out.setRGB(k * (0.86 + warm), k, k * (0.92 - warm * 0.5));
+    const k = 0.4 + 1.55 * Math.pow(b, 1.1);
+    const warm = 0.08 + Math.max(0, b - 0.6) * 0.75;
+    out.setRGB(k * (0.84 + warm), k * 1.04, k * (0.74 - warm * 0.35));
     out.multiplyScalar(0.92 + r() * 0.16);
     return out;
   };
@@ -470,11 +471,11 @@ export function createRealisticFir({ isMobile = false } = {}) {
 
   // --- тёплая гирлянда: спираль по кончикам лап, мягкое мерцание ---
   const bulbCount = isMobile ? 320 : 520;
-  const bulbGeo = new THREE.SphereGeometry(0.09, 8, 6);
+  const bulbGeo = new THREE.SphereGeometry(0.11, 8, 6);
   const phases = new Float32Array(bulbCount);
   const bulbColors = new Float32Array(bulbCount * 3);
-  const warmA = new THREE.Color("#ffd28a");
-  const warmB = new THREE.Color("#fff1d6");
+  const warmA = new THREE.Color("#ffc86e");
+  const warmB = new THREE.Color("#fff0cf");
   for (let i = 0; i < bulbCount; i++) {
     phases[i] = rnd() * Math.PI * 2;
     const c = rnd() < 0.75 ? warmA : warmB;
@@ -522,6 +523,29 @@ export function createRealisticFir({ isMobile = false } = {}) {
   bulbs.frustumCulled = false;
   group.add(bulbs);
 
+  // Мягкие ореолы вокруг каждой лампочки: «киношные» круги света, как на
+  // фото ёлки в полумраке. Точки-спрайты с аддитивным смешиванием — дёшево.
+  const glowTex = makeGlowTexture();
+  const pointScale = { value: 700 };
+  const haloPos = new Float32Array(bulbCount * 3);
+  const haloSize = new Float32Array(bulbCount);
+  const bm = new THREE.Matrix4();
+  const bp = new THREE.Vector3();
+  for (let i = 0; i < bulbCount; i++) {
+    bulbs.getMatrixAt(i, bm);
+    bp.setFromMatrixPosition(bm);
+    haloPos.set([bp.x, bp.y, bp.z], i * 3);
+    haloSize[i] = 1.0 + rnd() * 0.7;
+  }
+  const haloGeo = new THREE.BufferGeometry();
+  haloGeo.setAttribute("position", new THREE.BufferAttribute(haloPos, 3));
+  haloGeo.setAttribute("aPhase", new THREE.BufferAttribute(phases, 1));
+  haloGeo.setAttribute("aColor", new THREE.BufferAttribute(bulbColors, 3));
+  haloGeo.setAttribute("aSize", new THREE.BufferAttribute(haloSize, 1));
+  const halos = new THREE.Points(haloGeo, makeGlowPointsMaterial(glowTex, uniforms.uTime, glowUniform, pointScale, 0.75));
+  halos.frustumCulled = false;
+  group.add(halos);
+
   // --- вторая гирлянда: разноцветные «ретро»-лампочки, бегущие огни ---
   // Идёт встречной спиралью, лампы крупнее и вытянутые, как у советских гирлянд.
   const retroCount = isMobile ? 160 : 260;
@@ -529,7 +553,8 @@ export function createRealisticFir({ isMobile = false } = {}) {
   retroGeo.scale(1, 1.45, 1);
   const retroIdx = new Float32Array(retroCount);
   const retroColors = new Float32Array(retroCount * 3);
-  const retroPalette = ["#ff3b3b", "#2fe36b", "#3d8bff", "#ffc23a", "#ff4fd8"].map((h) => new THREE.Color(h));
+  // тёплая гамма, как у старинных гирлянд: алый, янтарь, золото, коралл, тёплый белый
+  const retroPalette = ["#ff3a2a", "#ffa63d", "#ffd65c", "#ff6f5a", "#ffe9c4"].map((h) => new THREE.Color(h));
   for (let i = 0; i < retroCount; i++) {
     retroIdx[i] = i;
     const c = retroPalette[i % retroPalette.length];
@@ -595,11 +620,102 @@ export function createRealisticFir({ isMobile = false } = {}) {
     const y = TREE_TOP_Y - 4 - t * (TREE_TOP_Y - GROUND_Y - 8);
     const a = i * 2.2;
     const r = envelopeRadius(60 - y) * 0.9;
-    const pl = new THREE.PointLight("#ffbf6b", 26, 22, 2);
+    const pl = new THREE.PointLight("#ffb057", 32, 24, 2);
     pl.position.set(Math.cos(a) * r, y, Math.sin(a) * r);
     group.add(pl);
     garlandLights.push(pl);
   }
+
+  // ---------------------------------------------------------------------
+  // Классические ёлочные шары: глянцевые красные, золотые, шампанское,
+  // серебро. Украшение между шарами-подарками, бликуют от HDR-окружения.
+  // ---------------------------------------------------------------------
+  const decorCount = isMobile ? 54 : 84;
+  const decorPalette = [
+    ["#b3121f", 4], // красный
+    ["#d9a13a", 4], // золото
+    ["#e9d3a6", 2], // шампанское
+    ["#7a0c16", 2], // бордо
+    ["#c9ced8", 1], // серебро
+  ];
+  const decorBag = decorPalette.flatMap(([c, w]) => Array(w).fill(c));
+  const decorBalls = [];
+  for (let i = 0; i < decorCount; i++) {
+    // равномерно по площади конуса: внизу шаров больше, чем у макушки
+    const t = (i + 0.5) / decorCount;
+    const yH = 7 + 50 * Math.sqrt(t);
+    const y = 60 - yH - (rnd() - 0.5) * 1.2;
+    const a = i * 2.39996 + (rnd() - 0.5) * 0.5;
+    const rad = 0.55 + rnd() * 0.22 + Math.min(0.15, yH / 350);
+    const r = envelopeRadius(60 - y) + 0.95;
+    decorBalls.push({
+      pos: new THREE.Vector3(Math.cos(a) * r, y, Math.sin(a) * r),
+      rad,
+      color: new THREE.Color(decorBag[Math.floor(rnd() * decorBag.length)]),
+    });
+  }
+  const decorMat = new THREE.MeshPhysicalMaterial({
+    metalness: 0.78,
+    roughness: 0.17,
+    clearcoat: 1,
+    clearcoatRoughness: 0.06,
+    envMapIntensity: 1.5,
+  });
+  const decorMesh = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 20, 14), decorMat, decorCount);
+  const capMat = new THREE.MeshStandardMaterial({ color: "#d6a64a", metalness: 0.9, roughness: 0.25 });
+  const decorCaps = new THREE.InstancedMesh(createCapLoopGeometry(), capMat, decorCount);
+  const placeDecor = (gifts) => {
+    decorBalls.forEach((b, i) => {
+      // шар-украшение уступает место подарку рядом
+      const blocked = gifts?.some((g) => (g.x - b.pos.x) ** 2 + (g.z - b.pos.z) ** 2 + (g.topY - 1.4 - b.pos.y) ** 2 < 4.8);
+      const k = blocked ? 0.0001 : 1;
+      tmp.position.copy(b.pos);
+      tmp.quaternion.identity();
+      tmp.scale.setScalar(b.rad * k);
+      tmp.updateMatrix();
+      decorMesh.setMatrixAt(i, tmp.matrix);
+      tmp.position.y += b.rad * k * 0.97;
+      tmp.scale.setScalar(b.rad * 1.35 * k);
+      tmp.updateMatrix();
+      decorCaps.setMatrixAt(i, tmp.matrix);
+      decorMesh.setColorAt(i, b.color);
+    });
+    decorMesh.instanceMatrix.needsUpdate = true;
+    decorCaps.instanceMatrix.needsUpdate = true;
+    if (decorMesh.instanceColor) decorMesh.instanceColor.needsUpdate = true;
+  };
+  placeDecor([]);
+  decorMesh.frustumCulled = false;
+  decorCaps.frustumCulled = false;
+  group.add(decorMesh, decorCaps);
+
+  // Размытые огни за ёлкой (боке): тёплые круги далёких фонарей и окон.
+  // Лес их частично закрывает — получается глубина, как в кадре с малой ГРИП.
+  const bokehCount = isMobile ? 46 : 70;
+  const bokehPos = new Float32Array(bokehCount * 3);
+  const bokehCol = new Float32Array(bokehCount * 3);
+  const bokehSize = new Float32Array(bokehCount);
+  const bokehPhase = new Float32Array(bokehCount);
+  const bokehPalette = ["#ffb44d", "#ffcf7a", "#ff8a3d", "#ffe3a8", "#ff5a4a"].map((h) => new THREE.Color(h));
+  for (let i = 0; i < bokehCount; i++) {
+    const a = rnd() * Math.PI * 2;
+    const r = 85 + rnd() * 70;
+    bokehPos.set([Math.cos(a) * r, -1 + rnd() * 22, Math.sin(a) * r], i * 3);
+    const c = bokehPalette[Math.floor(rnd() * bokehPalette.length)];
+    bokehCol.set([c.r, c.g, c.b], i * 3);
+    bokehSize[i] = 3 + rnd() * 4.5;
+    bokehPhase[i] = rnd() * Math.PI * 2;
+  }
+  const bokehGeo = new THREE.BufferGeometry();
+  bokehGeo.setAttribute("position", new THREE.BufferAttribute(bokehPos, 3));
+  bokehGeo.setAttribute("aPhase", new THREE.BufferAttribute(bokehPhase, 1));
+  bokehGeo.setAttribute("aColor", new THREE.BufferAttribute(bokehCol, 3));
+  bokehGeo.setAttribute("aSize", new THREE.BufferAttribute(bokehSize, 1));
+  const bokehTex = makeBokehTexture();
+  const bokeh = new THREE.Points(bokehGeo, makeGlowPointsMaterial(bokehTex, uniforms.uTime, glowUniform, pointScale, 0.2, 0.25));
+  bokeh.frustumCulled = false;
+  bokeh.renderOrder = -1;
+  group.add(bokeh);
 
   // ---------------------------------------------------------------------
   // Ветки к подаркам: шар висит на нити у кончика настоящей лапы
@@ -612,6 +728,7 @@ export function createRealisticFir({ isMobile = false } = {}) {
       c.geometry?.dispose();
     });
     giftGroup.clear();
+    placeDecor(hangers || []);
     if (!hangers || hangers.length === 0) return;
 
     const hRnd = mulberry32(hangers.length * 7919);
@@ -685,11 +802,15 @@ export function createRealisticFir({ isMobile = false } = {}) {
     setGarlandGlow(k) {
       glowUniform.value = k;
     },
+    /** Пиксели на единицу размера на расстоянии 1 — для ореолов (зависит от высоты окна и угла камеры). */
+    setPointScale(px) {
+      pointScale.value = px;
+    },
     update(elapsed) {
       uniforms.uTime.value = elapsed;
       const g = glowUniform.value;
       for (let i = 0; i < garlandLights.length; i++) {
-        garlandLights[i].intensity = (22 + Math.sin(elapsed * 1.3 + i * 1.7) * 4) * g;
+        garlandLights[i].intensity = (30 + Math.sin(elapsed * 1.3 + i * 1.7) * 5) * g;
       }
     },
     dispose() {
@@ -699,8 +820,78 @@ export function createRealisticFir({ isMobile = false } = {}) {
       });
       sprayTex.dispose();
       snowTex.dispose();
+      glowTex.dispose();
+      bokehTex.dispose();
     },
   };
+}
+
+// Мягкое пятно света: яркий центр, плавный спад
+function makeGlowTexture() {
+  const c = document.createElement("canvas");
+  c.width = c.height = 64;
+  const g = c.getContext("2d");
+  const grd = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  grd.addColorStop(0, "rgba(255,255,255,1)");
+  grd.addColorStop(0.18, "rgba(255,255,255,0.55)");
+  grd.addColorStop(0.45, "rgba(255,255,255,0.14)");
+  grd.addColorStop(1, "rgba(255,255,255,0)");
+  g.fillStyle = grd;
+  g.fillRect(0, 0, 64, 64);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+// Диск боке: ровный круг с чуть более ярким краем, как у настоящего объектива
+function makeBokehTexture() {
+  const c = document.createElement("canvas");
+  c.width = c.height = 64;
+  const g = c.getContext("2d");
+  const grd = g.createRadialGradient(32, 32, 0, 32, 32, 30);
+  grd.addColorStop(0, "rgba(255,255,255,0.55)");
+  grd.addColorStop(0.78, "rgba(255,255,255,0.62)");
+  grd.addColorStop(0.9, "rgba(255,255,255,0.85)");
+  grd.addColorStop(1, "rgba(255,255,255,0)");
+  g.fillStyle = grd;
+  g.beginPath();
+  g.arc(32, 32, 30, 0, Math.PI * 2);
+  g.fill();
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+// Точки-спрайты с размером в мировых единицах и мерцанием
+function makeGlowPointsMaterial(map, uTime, uGlow, uScale, opacity, twinkleSpeed = 1) {
+  return new THREE.ShaderMaterial({
+    uniforms: { map: { value: map }, uTime, uGlow, uScale, uOpacity: { value: opacity }, uSpeed: { value: twinkleSpeed } },
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    vertexShader: `
+      attribute float aPhase;
+      attribute vec3 aColor;
+      attribute float aSize;
+      uniform float uTime, uGlow, uScale, uSpeed;
+      varying vec3 vColor;
+      void main() {
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        float tw = 0.72 + 0.28 * sin(uTime * 1.6 * uSpeed + aPhase) * sin(uTime * 0.7 * uSpeed + aPhase * 2.0);
+        vColor = aColor * tw * clamp(uGlow, 0.0, 1.6);
+        gl_PointSize = min(160.0, aSize * uScale / max(0.5, -mv.z));
+        gl_Position = projectionMatrix * mv;
+      }`,
+    fragmentShader: `
+      uniform sampler2D map;
+      uniform float uOpacity;
+      varying vec3 vColor;
+      void main() {
+        vec4 t = texture2D(map, gl_PointCoord);
+        gl_FragColor = vec4(vColor * t.rgb * t.a * uOpacity, 1.0);
+        #include <colorspace_fragment>
+      }`,
+  });
 }
 
 // ---------------------------------------------------------------------------

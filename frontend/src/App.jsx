@@ -221,6 +221,49 @@ function createSnowflakeBokehTexture() {
   return texture;
 }
 
+// Звёздная вспышка: четыре длинных луча и четыре коротких диагональных
+function createStarRaysTexture() {
+  const size = 256;
+  const c = document.createElement("canvas");
+  c.width = c.height = size;
+  const g = c.getContext("2d");
+  const h = size / 2;
+  g.translate(h, h);
+  g.globalCompositeOperation = "lighter";
+  const ray = (len, width, alpha) => {
+    const grd = g.createLinearGradient(0, 0, len, 0);
+    grd.addColorStop(0, `rgba(255,255,255,${alpha})`);
+    grd.addColorStop(1, "rgba(255,255,255,0)");
+    g.fillStyle = grd;
+    g.beginPath();
+    g.moveTo(0, -width);
+    g.lineTo(len, 0);
+    g.lineTo(0, width);
+    g.closePath();
+    g.fill();
+  };
+  for (let i = 0; i < 4; i++) {
+    g.save();
+    g.rotate((i * Math.PI) / 2);
+    ray(h, 3.2, 0.9);
+    g.restore();
+    g.save();
+    g.rotate((i * Math.PI) / 2 + Math.PI / 4);
+    ray(h * 0.55, 2.2, 0.55);
+    g.restore();
+  }
+  const core = g.createRadialGradient(0, 0, 0, 0, 0, h * 0.35);
+  core.addColorStop(0, "rgba(255,255,255,0.9)");
+  core.addColorStop(1, "rgba(255,255,255,0)");
+  g.fillStyle = core;
+  g.beginPath();
+  g.arc(0, 0, h * 0.35, 0, Math.PI * 2);
+  g.fill();
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
 function createRadialGlowTexture() {
   const canvas = document.createElement("canvas");
   canvas.width = 64;
@@ -7262,7 +7305,7 @@ export default function App() {
 
     const glassGlobeGeo = new THREE.SphereGeometry(0.62, 24, 20);
     const glassGlobeMat = new THREE.MeshPhysicalMaterial({
-      color: "#e0f2fe",
+      color: "#fff3df",
       transparent: true,
       opacity: 0.4,
       roughness: 0.06,
@@ -7431,6 +7474,12 @@ export default function App() {
     let fireworks3d = null;
     let lastElapsed = 0;
     let tiltPasses = [];
+    let starRaysRef = null;
+    // ореолы гирлянды задаются в мировых единицах: переводим в пиксели экрана
+    const syncPointScale = () =>
+      fir?.setPointScale?.(
+        (renderer.domElement.height || container.clientHeight) / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2))
+      );
     // Адаптивное качество: замеряем FPS после прогрева и упрощаем сцену на слабых устройствах
     const perf = { frames: 0, start: 0, level: 0, done: false };
     if (LOOK_NEW) {
@@ -7462,6 +7511,7 @@ export default function App() {
       firApiRef.current = fir;
       fir.setGarlandMode?.(garlandModeRef.current);
       fir.setGiftHangers(lastHangersRef.current);
+      syncPointScale();
 
       // Поляна: равнина, лес из настоящих елей, викторианские фонари, сугробы
       clearingGroup.visible = false;
@@ -7534,6 +7584,22 @@ export default function App() {
         })
       );
       topStarGroup.add(newStar);
+      starGlow.material.color.set("#ffc766");
+      // лучи-вспышка, как у звезды в кадре с ёлкой: медленно вращаются
+      const starRays = new THREE.Sprite(
+        new THREE.SpriteMaterial({
+          map: createStarRaysTexture(),
+          color: "#ffd88a",
+          transparent: true,
+          opacity: 0.85,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+          fog: false,
+        })
+      );
+      starRays.scale.setScalar(9);
+      topStarGroup.add(starRays);
+      starRaysRef = starRays;
       // звезда садится прямо на верхушку-«лидер», без зазора над стволом
       topStarGroup.position.y = 59.9;
 
@@ -7811,8 +7877,13 @@ export default function App() {
       starGlow.material.opacity = 0.5 + 0.18 * Math.sin(elapsed * 3.1);
       if (fir) {
         // в новом облике звезда — аккуратный огонёк, а не жёлтое пятно на полнеба
-        starGlow.scale.multiplyScalar(0.42);
-        starGlow.material.opacity *= 0.7;
+        starGlow.scale.multiplyScalar(0.55);
+        starGlow.material.opacity *= 0.85;
+        if (starRaysRef) {
+          starRaysRef.material.rotation = elapsed * 0.08;
+          starRaysRef.scale.setScalar(8.5 + Math.sin(elapsed * 1.9) * 0.8);
+          starRaysRef.material.opacity = 0.55 + 0.12 * Math.sin(elapsed * 2.3);
+        }
       }
       coreCrownGroup.rotation.z = Math.sin(elapsed * 0.55) * 0.0035;
       coreCrownGroup.rotation.x = Math.cos(elapsed * 0.42) * 0.0025;
@@ -7957,6 +8028,7 @@ export default function App() {
       camera.aspect = container.clientWidth / container.clientHeight;
       camera.updateProjectionMatrix();
       renderer.setSize(container.clientWidth, container.clientHeight);
+      syncPointScale();
       composer.setSize(container.clientWidth, container.clientHeight);
     };
     window.addEventListener("resize", handleResize);
