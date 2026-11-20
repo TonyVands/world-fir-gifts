@@ -9,7 +9,7 @@ import { HorizontalTiltShiftShader } from "three/examples/jsm/shaders/Horizontal
 import { VerticalTiltShiftShader } from "three/examples/jsm/shaders/VerticalTiltShiftShader.js";
 import { createRealisticFir, createCapLoopGeometry } from "./scene/realisticFir.js";
 import { createClearing } from "./scene/clearing.js";
-import { createRealResidents } from "./scene/realResidents.js";
+import { createVoxResidents } from "./scene/voxResidents.js";
 import { SNOW_Y } from "./scene/realisticFir.js";
 import { TIME_OF_DAY, WEATHER_PRESETS, createAtmosphereController } from "./scene/atmosphere.js";
 import { createFireworks3D } from "./scene/fireworks3d.js";
@@ -7521,8 +7521,8 @@ export default function App() {
       clearing = createClearing({ foliage: fir.foliage, isMobile: isMobileGpu });
       scene.add(clearing.group);
 
-      // Жители площади (реалистичные модели): грузятся после ёлки, не мешая ей
-      residents = createRealResidents({
+      // Жители площади в стиле «Пиксели» (≈0,5 МБ кубиков, грузятся после ёлки)
+      residents = createVoxResidents({
         groundY: SNOW_Y + 0.04,
         innerR: 28,
         outerR: clearing.plazaRadius - 7,
@@ -7868,16 +7868,42 @@ export default function App() {
       // Ближе камера не подойдёт ни при каком зуме — без «погружения» в ветви.
       const minSafeDistance =
         getConeEnvelopeRadius(scrollDepth + 4.0) * 0.88 + 3.6 + 1.3 * GIFT_ORB_SCALE + 3.5;
-      const currentConeRadius = Math.max(minSafeDistance, baseConeRadius * zoomLevel);
+      // На вертикальном экране (9:16) по мере спуска отъезжаем от ёлки:
+      // узкий кадр иначе показывает только хвою, без жителей площади.
+      const portraitK = THREE.MathUtils.clamp((0.95 - camera.aspect) / 0.45, 0, 1);
+      const descentK = scrollDepth / MAX_SCROLL_DEPTH;
+      let currentConeRadius =
+        Math.max(minSafeDistance, baseConeRadius * zoomLevel) * (1 + 0.38 * portraitK * descentK * descentK);
       const camY = 60.0 - scrollDepth;
+      let camHeight = Math.max(camY + 1.9, MIN_CAMERA_Y);
+
+      // Внизу ёлки камера сама приходит к Деду Морозу и Снегурочке
+      const hostsInfo = residents?.hosts;
+      const bottomK = hostsInfo && !focus ? THREE.MathUtils.smoothstep(scrollDepth, MAX_SCROLL_DEPTH - 9, MAX_SCROLL_DEPTH - 0.5) : 0;
+      if (bottomK > 0) {
+        if (!isDragging && !isPinching) {
+          let d = hostsInfo.angle - (scrollDepth * 0.18 + manualAzimuthOffset);
+          d = Math.atan2(Math.sin(d), Math.cos(d));
+          manualAzimuthOffset += d * 0.05 * bottomK;
+        }
+        const hostCamR = hostsInfo.radius + (13 + 9 * portraitK) * zoomLevel;
+        currentConeRadius = THREE.MathUtils.lerp(currentConeRadius, Math.max(hostCamR, hostsInfo.radius + 6), bottomK);
+        camHeight = THREE.MathUtils.lerp(camHeight, SNOW_Y + 4.2, bottomK);
+      }
+      const spiralNow = scrollDepth * 0.18 + manualAzimuthOffset;
 
       camera.position.set(
-        Math.cos(spiralAngle) * currentConeRadius,
-        Math.max(camY + 1.9, MIN_CAMERA_Y),
-        Math.sin(spiralAngle) * currentConeRadius
+        Math.cos(spiralNow) * currentConeRadius,
+        camHeight,
+        Math.sin(spiralNow) * currentConeRadius
       );
       // точка взгляда: ось Ёлки, а при выбранном шаре — смещается к нему
       if (focus) lookTarget.lerp(new THREE.Vector3(focus.x, focus.y, focus.z), 0.08);
+      else if (bottomK > 0)
+        lookTarget.lerp(
+          new THREE.Vector3(0, camY - 1.1, 0).lerp(new THREE.Vector3(hostsInfo.x, SNOW_Y + 2.6, hostsInfo.z), bottomK),
+          0.08
+        );
       else lookTarget.lerp(new THREE.Vector3(0, camY - 1.1, 0), 0.08);
       camera.lookAt(lookTarget);
       skyDome.position.y = camY;
