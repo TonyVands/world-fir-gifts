@@ -1,7 +1,7 @@
 {
   "name": "world-fir-gifts-frontend",
   "private": true,
-  "version": "18.1.0",
+  "version": "18.2.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,6 +10,9 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@fontsource/cormorant-garamond": "^5.3.0",
+    "@fontsource/jetbrains-mono": "^5.3.0",
+    "@fontsource/plus-jakarta-sans": "^5.3.0",
     "lucide-react": "^0.400.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

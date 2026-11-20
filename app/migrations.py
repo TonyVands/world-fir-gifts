@@ -103,8 +103,20 @@ def _add_gift_edited_at(conn: Connection) -> None:
     logger.info("[Migrate] gifts.edited_at добавлена.")
 
 
+def _add_user_consent(conn: Connection) -> None:
+    cols = _columns(conn, "users")
+    col_type = "TIMESTAMP WITH TIME ZONE" if conn.dialect.name == "postgresql" else "DATETIME"
+    if "consent_version" not in cols:
+        conn.execute(text("ALTER TABLE users ADD COLUMN consent_version VARCHAR(20) NULL"))
+        logger.info("[Migrate] users.consent_version добавлена.")
+    if "consent_at" not in cols:
+        conn.execute(text(f"ALTER TABLE users ADD COLUMN consent_at {col_type} NULL"))
+        logger.info("[Migrate] users.consent_at добавлена.")
+
+
 def run_migrations(conn: Connection) -> None:
     _add_is_demo(conn)
+    _add_user_consent(conn)
     _add_gift_edited_at(conn)
     _mark_demo_users(conn)
     _hash_legacy_fingerprints(conn)

@@ -344,6 +344,11 @@ async def create_gift(
     ratelimit.enforce(request, "gift_create", limit=20, window_s=600, extra_key=session_hash)
 
     card = payload.card
+    if not (payload.pd_consent and payload.publish_consent and payload.terms_accepted):
+        raise HTTPException(
+            status_code=422,
+            detail="Чтобы повесить шар, нужно принять соглашение и дать согласия на обработку и показ данных.",
+        )
     _moderate_payload(payload)
 
     contact_type, contact_value = normalize_contact(card.contact_handle)
@@ -373,10 +378,14 @@ async def create_gift(
                 contact_type=contact_type,
                 encrypted_contact=encrypt_contact(contact_value),
                 is_demo=False,
+                consent_version=config.LEGAL_VERSION,
+                consent_at=datetime.now(timezone.utc),
             )
             session.add(user)
             await session.flush()
         else:
+            user.consent_version = config.LEGAL_VERSION
+            user.consent_at = datetime.now(timezone.utc)
             gifts_count = (
                 await session.execute(select(func.count(Gift.id)).where(Gift.author_id == user.id))
             ).scalar_one()

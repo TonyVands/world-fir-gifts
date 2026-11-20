@@ -186,6 +186,11 @@ class GiftCreateRequest(BaseModel):
     packaging: PackagingInput
     melody: MelodyInput
     card: GiftCardCreateSchema
+    # 152-ФЗ: отдельные согласия — на обработку и на показ имени/города на ёлке,
+    # плюс принятие пользовательского соглашения. Без них шар не создаётся.
+    pd_consent: bool = False
+    publish_consent: bool = False
+    terms_accepted: bool = False
 
 
 class GiftCardUpdateSchema(GiftCardCreateSchema):

@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core import config
 from app.core.auth import find_user_by_hash, optional_session_hash
 from app.database import get_db
-from app.models import CandleLight, Gift, User
+from app.models import CandleLight, Gift, GiftCandle, User
 from app.services.geo import city_coords, city_key
 
 router = APIRouter(prefix="/api/world", tags=["world"])
@@ -237,3 +237,45 @@ async def my_achievements(
     response.headers["Cache-Control"] = "no-store"
     items = await compute_achievements(session, session_hash)
     return {"items": items, "unlocked": sum(1 for i in items if i["unlocked"]), "total": len(items)}
+
+
+# ---------------------------------------------------------------------------
+# Счётчик Ёлки: свечи и новые шары за сегодня, за 7 дней и за всё время.
+# Демо-шары не считаем — только настоящие. Кеш на 30 секунд.
+# ---------------------------------------------------------------------------
+_stats_cache: dict = {"at": 0.0, "data": None}
+
+
+@router.get("/stats")
+async def world_stats(response: Response, session: AsyncSession = Depends(get_db)):
+    response.headers["Cache-Control"] = "public, max-age=30"
+    now_mono = time.monotonic()
+    if _stats_cache["data"] is not None and now_mono - _stats_cache["at"] < 30:
+        return _stats_cache["data"]
+    now = datetime.now(timezone.utc)
+    today = config.candle_day(now)
+    local_midnight = now.astimezone(config.CANDLE_DAY_TZ).replace(hour=0, minute=0, second=0, microsecond=0)
+    week_start_local = local_midnight - timedelta(days=6)
+    week_days = [(local_midnight - timedelta(days=i)).date().isoformat() for i in range(7)]
+
+    async def gifts_since(start: datetime | None) -> int:
+        q = select(func.count(Gift.id)).join(User, User.id == Gift.author_id).where(User.is_demo.is_(False))
+        if start is not None:
+            q = q.where(Gift.created_at >= start.astimezone(timezone.utc))
+        return int((await session.execute(q)).scalar_one() or 0)
+
+    async def candles_on(days: list[str] | None) -> int:
+        q = select(func.count(CandleLight.id))
+        if days is not None:
+            q = q.where(CandleLight.day.in_(days))
+        return int((await session.execute(q)).scalar_one() or 0)
+
+    legacy = int((await session.execute(select(func.count(GiftCandle.id)))).scalar_one() or 0)
+    data = {
+        "day": today,
+        "today": {"candles": await candles_on([today]), "gifts": await gifts_since(local_midnight)},
+        "week": {"candles": await candles_on(week_days), "gifts": await gifts_since(week_start_local)},
+        "total": {"candles": await candles_on(None) + legacy, "gifts": await gifts_since(None)},
+    }
+    _stats_cache.update(at=now_mono, data=data)
+    return data

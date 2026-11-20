@@ -29,6 +29,9 @@ class User(Base):
     # Демо-мастера из сидера: видны на Ёлке, но НЕ участвуют в Кольце Чудес.
     is_demo: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    # Доказательство согласий (152-ФЗ): версия документов и момент, когда их приняли
+    consent_version: Mapped[str | None] = mapped_column(String(20), nullable=True, default=None)
+    consent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
 
 
 class Gift(Base):

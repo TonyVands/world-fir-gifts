@@ -17,14 +17,14 @@ from app.core import config
 from app.core.security import crypto_service
 from app.database import AsyncSessionLocal, Base, engine
 from app.migrations import run_migrations
-from app.routers import gifts, handshakes, ring, share, telegram, users, world, ws
+from app.routers import gifts, handshakes, legal, ring, share, telegram, users, world, ws
 from app.services import telegram as telegram_service
 from app.services.ring import ring_auto_match_loop
 from app.services.seeder import seed_initial_gifts
 
 logger = logging.getLogger("uvicorn.error")
 
-API_VERSION = "18.1.0"
+API_VERSION = "18.2.0"
 
 
 async def _rotate_and_check_contacts() -> None:
@@ -60,6 +60,37 @@ async def _rotate_and_check_contacts() -> None:
         )
 
 
+async def _purge_contacts_if_due() -> int:
+    """После PURGE_CONTACTS_AFTER стирает контакты для связи (срок из Политики)."""
+    from datetime import date as _date
+    try:
+        due = _date.fromisoformat(config.PURGE_CONTACTS_AFTER)
+    except ValueError:
+        return 0
+    if _date.today() <= due:
+        return 0
+    cleared = 0
+    async with AsyncSessionLocal() as session:
+        for table in ("users", "gifts"):
+            res = await session.execute(
+                text(f"UPDATE {table} SET encrypted_contact = '' WHERE encrypted_contact <> ''")
+            )
+            cleared += res.rowcount or 0
+        await session.commit()
+    if cleared:
+        logger.info("[Privacy] Срок хранения контактов истёк, стёрто записей: %s", cleared)
+    return cleared
+
+
+async def _purge_loop() -> None:
+    while True:
+        try:
+            await _purge_contacts_if_due()
+        except Exception:  # noqa: BLE001
+            logger.exception("[Privacy] Не удалось стереть контакты")
+        await asyncio.sleep(6 * 3600)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
@@ -85,9 +116,11 @@ async def lifespan(app: FastAPI):
         logger.info("[Lifespan] Автоформирование Кольца Чудес запланировано на %s.", match_at.isoformat())
 
     tg_tasks = telegram_service.start(AsyncSessionLocal)
+    purge_task = asyncio.create_task(_purge_loop())
 
     yield
 
+    purge_task.cancel()
     for task in tg_tasks:
         task.cancel()
     if ring_task is not None:
@@ -123,8 +156,8 @@ _CSP = "; ".join(
         # SDK мини-приложения Telegram; 'wasm-unsafe-eval' — только для WebAssembly
         # (распаковщик 3D-моделей жителей), обычный eval по-прежнему запрещён
         "script-src 'self' 'wasm-unsafe-eval' https://telegram.org",
-        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
-        "font-src 'self' data: https://fonts.gstatic.com",
+        "style-src 'self' 'unsafe-inline'",
+        "font-src 'self' data:",
         "img-src 'self' data: blob:",
         "media-src 'self' data: blob:",
         "connect-src 'self' ws: wss: blob: data:",  # текстуры внутри .glb читаются через blob:
@@ -168,6 +201,7 @@ app.include_router(share.router)
 app.include_router(world.router)
 app.include_router(telegram.router)
 app.include_router(telegram.max_router)
+app.include_router(legal.router)
 
 
 def _db_mode() -> str:

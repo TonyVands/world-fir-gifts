@@ -124,6 +124,8 @@ export const reportGift = (giftId, reason = "other") =>
   request(`/gifts/${encodeURIComponent(giftId)}/report`, { method: "POST", body: { reason } });
 
 export const fetchMyProfile = () => request("/users/me");
+export const deleteMyData = () => request("/users/me", { method: "DELETE" });
+export const fetchWorldStats = () => request("/world/stats", { auth: false });
 
 export const fetchRingStatus = () => request("/ring/status", { auth: false });
 

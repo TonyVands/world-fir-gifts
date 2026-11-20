@@ -60,6 +60,9 @@ GIFT_PAYLOAD = {
         "totem_pet": "Полярная сова",
         "contact_handle": "@test_keeper",
     },
+    "pd_consent": True,
+    "publish_consent": True,
+    "terms_accepted": True,
 }
 
 PHALLIC_VOXELS = [

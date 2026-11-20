@@ -1,11 +1,20 @@
-from fastapi import APIRouter, Depends
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, Request
+from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core import config
-from app.core.auth import find_user_by_hash, optional_session_hash
+from app.core import config, ratelimit
+from app.core.auth import find_user_by_hash, optional_session_hash, require_session_hash
 from app.database import get_db
-from app.models import Gift
+from app.models import (
+    CandleLight,
+    ExchangeRingHandshake,
+    Gift,
+    GiftCandle,
+    GiftReport,
+    MaxLink,
+    TelegramLink,
+    User,
+)
 from app.schemas import UserProfileDTO
 
 router = APIRouter(prefix="/api/users", tags=["users"])
@@ -36,3 +45,43 @@ async def get_my_profile(
         gift_ids=gift_ids,
         max_gifts=config.MAX_GIFTS_PER_USER,
     )
+
+
+@router.delete("/me")
+async def delete_my_data(
+    request: Request,
+    session_hash: str = Depends(require_session_hash),
+    session: AsyncSession = Depends(get_db),
+):
+    """Отзыв согласия и удаление всех своих данных (ст. 9, 21 152-ФЗ).
+
+    Удаляются: шары мастера и всё, что к ним привязано (свечи, жалобы, звенья
+    Кольца Чудес), подписки на уведомления, свечи, зажжённые этим браузером,
+    и сама запись мастера с именем, городом и контактом.
+    """
+    ratelimit.enforce(request, "delete_me", limit=5, window_s=600, extra_key=session_hash)
+    user = await find_user_by_hash(session, session_hash)
+    if user is None:
+        return {"deleted": False, "gifts": 0}
+    gift_ids = list((await session.execute(select(Gift.id).where(Gift.author_id == user.id))).scalars().all())
+    if gift_ids:
+        await session.execute(delete(GiftCandle).where(GiftCandle.gift_id.in_(gift_ids)))
+        await session.execute(delete(CandleLight).where(CandleLight.gift_id.in_(gift_ids)))
+        await session.execute(delete(GiftReport).where(GiftReport.gift_id.in_(gift_ids)))
+    ring_conds = [ExchangeRingHandshake.giver_user_id == user.id, ExchangeRingHandshake.receiver_user_id == user.id]
+    if gift_ids:
+        ring_conds.append(ExchangeRingHandshake.gift_id.in_(gift_ids))
+    await session.execute(delete(ExchangeRingHandshake).where(or_(*ring_conds)))
+    await session.execute(delete(CandleLight).where(CandleLight.voter_hash == session_hash))
+    await session.execute(delete(GiftCandle).where(GiftCandle.voter_hash == session_hash))
+    await session.execute(delete(GiftReport).where(GiftReport.reporter_hash == session_hash))
+    await session.execute(delete(TelegramLink).where(TelegramLink.user_id == user.id))
+    await session.execute(delete(MaxLink).where(MaxLink.user_id == user.id))
+    if gift_ids:
+        await session.execute(delete(Gift).where(Gift.id.in_(gift_ids)))
+    await session.execute(delete(User).where(User.id == user.id))
+    await session.commit()
+    from app.routers.gifts import invalidate_showcase
+
+    invalidate_showcase()
+    return {"deleted": True, "gifts": len(gift_ids)}

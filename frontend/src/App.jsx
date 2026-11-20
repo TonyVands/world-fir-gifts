@@ -33,6 +33,8 @@ import {
 import {
   connectTreeEvents,
   createGift as apiCreateGift,
+  deleteMyData,
+  fetchWorldStats,
   fetchCandleLeaders as apiFetchCandleLeaders,
   fetchCandleStatus as apiFetchCandleStatus,
   fetchAchievements as apiFetchAchievements,
@@ -3698,8 +3700,13 @@ function GiftWorkshopModal({
     Город: city,
   });
   const limitReached = !isEdit && remainingGifts === 0;
+  // 152-ФЗ: три отдельных отметки, ни одна не стоит заранее.
+  const [pdConsent, setPdConsent] = useState(false);
+  const [publishConsent, setPublishConsent] = useState(false);
+  const [termsAccepted, setTermsAccepted] = useState(false);
+  const consentsOk = isEdit || (pdConsent && publishConsent && termsAccepted);
   const canSubmit =
-    voxelSafety.isSafe && textSafety.isSafe && contactIsValid && !isSubmitting && !limitReached;
+    voxelSafety.isSafe && textSafety.isSafe && contactIsValid && consentsOk && !isSubmitting && !limitReached;
 
   const liveScore = computeAntiSybilScoreDetails({
     wishText: secretWish,
@@ -3803,6 +3810,7 @@ function GiftWorkshopModal({
         totem_pet: totemPet,
         contact_handle: effectiveContact,
       },
+      ...(isEdit ? {} : { pd_consent: pdConsent, publish_consent: publishConsent, terms_accepted: termsAccepted }),
       });
       onClose();
     } catch (err) {
@@ -4156,6 +4164,21 @@ function GiftWorkshopModal({
                 </div>
               </div>
 
+              {!isEdit && (
+                <div className="space-y-2 p-3 rounded-xl bg-white/[0.03] border border-white/10 text-[12px] leading-snug text-slate-300">
+                  {[
+                    [pdConsent, setPdConsent, <>Даю <a href="/legal/consent" target="_blank" rel="noopener" className="underline text-sky-300">согласие на обработку</a> персональных данных</>],
+                    [publishConsent, setPublishConsent, <>Даю <a href="/legal/publish" target="_blank" rel="noopener" className="underline text-sky-300">согласие на показ</a> имени и города на Ёлке</>],
+                    [termsAccepted, setTermsAccepted, <>Принимаю <a href="/legal/terms" target="_blank" rel="noopener" className="underline text-sky-300">соглашение</a> и ознакомлен(а) с <a href="/legal/privacy" target="_blank" rel="noopener" className="underline text-sky-300">политикой</a></>],
+                  ].map(([val, set, label], i) => (
+                    <label key={i} className="flex items-start gap-2 cursor-pointer">
+                      <input type="checkbox" checked={val} onChange={(e) => set(e.target.checked)} className="mt-0.5 h-4 w-4 accent-amber-300 shrink-0" />
+                      <span>{label}</span>
+                    </label>
+                  ))}
+                </div>
+              )}
+
               {!textSafety.isSafe && (
                 <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-400/40 text-xs text-rose-200">
                   ⚠️ «{textSafety.field}»: {textSafety.reason}
@@ -4190,6 +4213,8 @@ function GiftWorkshopModal({
               ? `У вас уже ${maxGifts} шара — это максимум`
               : isLast && !contactIsValid
               ? "Добавьте контакт для обмена"
+              : isLast && !consentsOk
+              ? "Отметьте согласия внизу"
               : remainingGifts != null
               ? `Ещё ${remainingGifts} из ${maxGifts} шаров`
               : ""}
@@ -5193,6 +5218,82 @@ function dayLabel(day, today) {
   return d.toLocaleDateString("ru-RU", { day: "numeric", month: "long" });
 }
 
+function DeleteMyDataBlock() {
+  const [stage, setStage] = useState("idle"); // idle | confirm | busy | done | error
+  const run = async () => {
+    setStage("busy");
+    try {
+      await deleteMyData();
+      try {
+        for (const k of Object.keys(localStorage)) if (k.startsWith("wfg")) localStorage.removeItem(k);
+      } catch { /* хранилище недоступно */ }
+      setStage("done");
+      setTimeout(() => window.location.reload(), 1600);
+    } catch {
+      setStage("error");
+    }
+  };
+  if (stage === "done") return <div className="text-[12px] text-emerald-300 text-center py-2">Данные удалены. Ёлка перезагружается…</div>;
+  return (
+    <div className="pt-3 mt-2 border-t border-white/10 text-center space-y-2">
+      {stage === "idle" || stage === "error" ? (
+        <>
+          <button type="button" onClick={() => setStage("confirm")} className="text-[12px] text-slate-400 underline underline-offset-2 hover:text-rose-300">
+            Удалить мои данные
+          </button>
+          {stage === "error" && <div className="text-[11px] text-rose-300">Не получилось — попробуйте ещё раз.</div>}
+          <div className="text-[10px] text-slate-500">
+            <a href="/legal" target="_blank" rel="noopener" className="underline">Документы и персональные данные</a>
+          </div>
+        </>
+      ) : (
+        <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-400/40 space-y-2">
+          <div className="text-[12px] text-rose-100">
+            Удалим все ваши шары, имя, город, контакт, свечи и подписки. Это нельзя отменить, а в Кольце Чудес вы участвовать не будете.
+          </div>
+          <div className="flex gap-2 justify-center">
+            <button type="button" onClick={() => setStage("idle")} className="px-4 py-2 rounded-lg bg-white/10 text-xs text-slate-200">Отмена</button>
+            <button type="button" disabled={stage === "busy"} onClick={run} className="px-4 py-2 rounded-lg bg-rose-400 text-slate-950 text-xs font-semibold disabled:opacity-50">
+              {stage === "busy" ? "Удаляем…" : "Удалить навсегда"}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function WorldStatsBar() {
+  const [stats, setStats] = useState(null);
+  const [period, setPeriod] = useState("today");
+  useEffect(() => {
+    let alive = true;
+    fetchWorldStats().then((d) => alive && setStats(d)).catch(() => {});
+    return () => { alive = false; };
+  }, []);
+  if (!stats) return null;
+  const cur = stats[period] || { candles: 0, gifts: 0 };
+  const fmt = (n) => Number(n || 0).toLocaleString("ru-RU");
+  const tabs = [["today", "Сегодня"], ["week", "Неделя"], ["total", "Всего"]];
+  return (
+    <div className="rounded-2xl bg-white/[0.04] border border-white/10 px-3 py-2.5">
+      <div className="flex items-center justify-around text-amber-50">
+        <div className="text-center"><div className="text-lg font-semibold tabular-nums">🕯 {fmt(cur.candles)}</div><div className="text-[10px] text-slate-400">свечей</div></div>
+        <div className="w-px h-8 bg-white/10" />
+        <div className="text-center"><div className="text-lg font-semibold tabular-nums">🎁 {fmt(cur.gifts)}</div><div className="text-[10px] text-slate-400">шаров</div></div>
+      </div>
+      <div className="mt-2 flex gap-1 p-0.5 rounded-xl bg-white/5">
+        {tabs.map(([id, label]) => (
+          <button key={id} type="button" onClick={() => setPeriod(id)} aria-pressed={period === id}
+            className={`flex-1 py-1 rounded-lg text-[11px] ${period === id ? "bg-white/15 text-white font-semibold" : "text-slate-400"}`}>
+            {label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function MyGiftsSheet({ data, loading, error, onRetry, initialTab = "mine", litToday, candlesLeft, onShow, onShare, onEdit, onCreate, onClose }) {
   const [tab, setTab] = useState(initialTab);
   const mine = data?.mine || [];
@@ -5302,6 +5403,7 @@ function MyGiftsSheet({ data, loading, error, onRetry, initialTab = "mine", litT
           {tab === "lit" && lit.length > 0 && candlesLeft != null && (
             <div className="text-[11px] text-slate-500 text-center pt-1">Свечей на сегодня: {candlesLeft}. Каждый день — новые.</div>
           )}
+          {tab === "mine" && mine.length > 0 && <DeleteMyDataBlock />}
         </div>
       </div>
     </div>
@@ -5457,6 +5559,8 @@ function NewLookMenu({
         </div>
         <div className="flex-1 overflow-y-auto overscroll-contain px-5 pt-4 space-y-6 wfg-safe-b">
 
+        <WorldStatsBar />
+
         <MenuSection title="Мои шары">
           <div className="grid grid-cols-2 gap-1.5">
             <button type="button" onClick={() => fest.onMine?.("mine")} className={chip(false)}>
@@ -5545,6 +5649,11 @@ function NewLookMenu({
           <button type="button" onClick={onOpenGuide} className={`${chip(false)} w-full`}>
             Как это работает
           </button>
+          <div className="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-slate-400">
+            <a href="/legal/privacy" target="_blank" rel="noopener" className="underline underline-offset-2 hover:text-slate-200">Политика данных</a>
+            <a href="/legal/terms" target="_blank" rel="noopener" className="underline underline-offset-2 hover:text-slate-200">Соглашение</a>
+            <a href="/legal" target="_blank" rel="noopener" className="underline underline-offset-2 hover:text-slate-200">Все документы</a>
+          </div>
         </MenuSection>
         </div>
       </div>

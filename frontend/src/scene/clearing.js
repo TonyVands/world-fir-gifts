@@ -4,6 +4,7 @@
 // ============================================================================
 import * as THREE from "three";
 import { SNOW_Y, layBranch, mulberry32 } from "./realisticFir.js";
+import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 
 // Облегчённая ель для фона: меньше веток, крупные лапы (вдали детали не видны).
 function growBackgroundFir({ origin, height, rnd, push }) {
@@ -49,55 +50,75 @@ function growBackgroundFir({ origin, height, rnd, push }) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Пиксельная площадь: всё собрано из кубиков в стиле жителей (voxel-art).
+// Каждый предмет — одна сетка с цветами вершин (1 draw call) + светящаяся часть.
+// ---------------------------------------------------------------------------
+const PX = 0.11; // «пиксель» площади ≈ воксель жителей
+const _c = new THREE.Color();
+
+// boxes: [w, h, d, x, y, z, color] — размеры и позиции в метрах сцены
+function voxMesh(boxes, { mat } = {}) {
+  const geos = boxes.map(([w, h, d, x, y, z, col]) => {
+    const g = new THREE.BoxGeometry(w, h, d).toNonIndexed();
+    g.translate(x, y, z);
+    _c.set(col);
+    const n = g.attributes.position.count;
+    const arr = new Float32Array(n * 3);
+    const nrm = g.attributes.normal.array;
+    for (let i = 0; i < n; i++) {
+      // «пиксельный» свет: верх светлее, низ темнее, грани чуть разные
+      const ny = nrm[i * 3 + 1];
+      const nx = nrm[i * 3];
+      const k = ny > 0.5 ? 1.12 : ny < -0.5 ? 0.6 : nx !== 0 ? 0.86 : 0.95;
+      arr[i * 3] = Math.min(1, _c.r * k);
+      arr[i * 3 + 1] = Math.min(1, _c.g * k);
+      arr[i * 3 + 2] = Math.min(1, _c.b * k);
+    }
+    g.setAttribute("color", new THREE.BufferAttribute(arr, 3));
+    return g;
+  });
+  const geo = mergeGeometries(geos, false);
+  geos.forEach((g) => g.dispose());
+  return new THREE.Mesh(geo, mat || VOX_MAT);
+}
+
+const VOX_MAT = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, metalness: 0, flatShading: true });
+
 function buildLantern({ withLight = true } = {}) {
   const g = new THREE.Group();
-  const iron = new THREE.MeshStandardMaterial({ color: "#1a1d24", metalness: 0.75, roughness: 0.38 });
-  const snow = new THREE.MeshStandardMaterial({ color: "#eef3ff", roughness: 0.6 });
-
-  const plinth = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.55, 0.55, 12), iron);
-  plinth.position.y = 0.27;
-  const plinth2 = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.4, 0.4, 12), iron);
-  plinth2.position.y = 0.72;
-  const post = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.14, 5.0, 10), iron);
-  post.position.y = 3.4;
-  const collar = new THREE.Mesh(new THREE.TorusGeometry(0.16, 0.05, 8, 16), iron);
-  collar.rotation.x = Math.PI / 2;
-  collar.position.y = 2.2;
-  const collar2 = collar.clone();
-  collar2.position.y = 5.75;
-  g.add(plinth, plinth2, post, collar, collar2);
-
-  // фонарь-«домик»: стекло, рамка, крыша, шпиль
-  const head = new THREE.Group();
-  head.position.y = 6.45;
+  const IRON = "#2a2f3a";
+  const IRON_HI = "#454c5c";
+  const SNOW = "#eef3ff";
+  const body = voxMesh([
+    [1.1, 0.44, 1.1, 0, 0.22, 0, IRON],
+    [0.77, 0.44, 0.77, 0, 0.66, 0, IRON_HI],
+    [0.33, 5.0, 0.33, 0, 3.38, 0, IRON],
+    [0.55, 0.22, 0.55, 0, 2.2, 0, IRON_HI],
+    [0.55, 0.22, 0.55, 0, 5.8, 0, IRON_HI],
+    // голова фонаря: рамка, крыша ступеньками, снег, шпиль
+    [0.88, 0.11, 0.88, 0, 5.95, 0, IRON],
+    [0.11, 0.99, 0.11, -0.39, 6.45, -0.39, IRON],
+    [0.11, 0.99, 0.11, 0.39, 6.45, -0.39, IRON],
+    [0.11, 0.99, 0.11, -0.39, 6.45, 0.39, IRON],
+    [0.11, 0.99, 0.11, 0.39, 6.45, 0.39, IRON],
+    [1.1, 0.22, 1.1, 0, 7.0, 0, IRON],
+    [0.77, 0.22, 0.77, 0, 7.22, 0, IRON_HI],
+    [0.88, 0.11, 0.88, 0, 7.16, 0, SNOW],
+    [0.44, 0.22, 0.44, 0, 7.44, 0, IRON],
+    [0.44, 0.11, 0.44, 0, 7.56, 0, SNOW],
+    [0.11, 0.33, 0.11, 0, 7.72, 0, IRON_HI],
+  ]);
   const glassMat = new THREE.MeshStandardMaterial({
     color: "#ffe2b0",
     emissive: "#ffb85c",
     emissiveIntensity: 2.2,
-    roughness: 0.25,
-    transparent: true,
-    opacity: 0.92,
+    roughness: 1,
+    flatShading: true,
   });
-  const glass = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.95, 0.62), glassMat);
-  head.add(glass);
-  const barGeo = new THREE.BoxGeometry(0.06, 1.02, 0.06);
-  for (const [x, z] of [[-0.32, -0.32], [0.32, -0.32], [-0.32, 0.32], [0.32, 0.32]]) {
-    const bar = new THREE.Mesh(barGeo, iron);
-    bar.position.set(x, 0, z);
-    head.add(bar);
-  }
-  const bottom = new THREE.Mesh(new THREE.BoxGeometry(0.78, 0.08, 0.78), iron);
-  bottom.position.y = -0.52;
-  const roof = new THREE.Mesh(new THREE.ConeGeometry(0.62, 0.5, 4, 1), iron);
-  roof.rotation.y = Math.PI / 4;
-  roof.position.y = 0.74;
-  const roofSnow = new THREE.Mesh(new THREE.ConeGeometry(0.5, 0.18, 4, 1), snow);
-  roofSnow.rotation.y = Math.PI / 4;
-  roofSnow.position.y = 0.86;
-  const finial = new THREE.Mesh(new THREE.SphereGeometry(0.07, 10, 8), iron);
-  finial.position.y = 1.06;
-  head.add(bottom, roof, roofSnow, finial);
-  g.add(head);
+  const glass = new THREE.Mesh(new THREE.BoxGeometry(0.66, 0.88, 0.66), glassMat);
+  glass.position.y = 6.45;
+  g.add(body, glass);
 
   const light = withLight ? new THREE.PointLight("#ffb35c", 30, 26, 2) : null;
   if (light) {
@@ -119,116 +140,114 @@ function buildLantern({ withLight = true } = {}) {
 
 const PLAZA_R = 54;
 
-// Брусчатка с инеем: неровные камни, тёмные швы, снег в щелях
+// Пиксельная брусчатка: маленький холст, квадратные камни с фаской в 1 пиксель,
+// снег в швах. NearestFilter — пиксели остаются чёткими, как у жителей.
 function makeCobbleTexture() {
+  const N = 48;
   const c = document.createElement("canvas");
-  c.width = c.height = 512;
+  c.width = c.height = N;
   const g = c.getContext("2d");
-  g.fillStyle = "#3b3a3f";
-  g.fillRect(0, 0, 512, 512);
+  g.fillStyle = "#2c2b31";
+  g.fillRect(0, 0, N, N);
   const rnd = mulberry32(77);
-  const rows = 16;
-  const h = 512 / rows;
-  for (let r = 0; r < rows; r++) {
-    let x = r % 2 ? -h * 0.5 : 0;
-    while (x < 512) {
-      const w = h * (0.9 + rnd() * 0.7);
-      const tone = 108 + Math.floor(rnd() * 46);
-      const warm = Math.floor(rnd() * 12);
-      g.fillStyle = `rgb(${tone + warm},${tone + Math.floor(warm / 2)},${tone - 4})`;
-      g.beginPath();
-      g.roundRect(x + 2, r * h + 2, w - 4, h - 4, 7);
-      g.fill();
-      // иней на камне
-      if (rnd() < 0.35) {
-        g.fillStyle = `rgba(240,244,252,${0.25 + rnd() * 0.4})`;
-        g.beginPath();
-        g.ellipse(x + w * (0.3 + rnd() * 0.4), r * h + h * 0.5, w * 0.35, h * 0.28, 0, 0, Math.PI * 2);
-        g.fill();
+  const S = 8; // камень 8×8 пикселей вместе со швом
+  for (let r = 0; r < N / S; r++) {
+    const shift = r % 2 ? S / 2 : 0;
+    for (let col = -1; col < N / S; col++) {
+      const x0 = col * S + shift;
+      const y0 = r * S;
+      const tone = 104 + Math.floor(rnd() * 5) * 9;
+      const warm = Math.floor(rnd() * 3) * 5;
+      const base = [tone + warm, tone + (warm >> 1), tone - 6];
+      const paint = (x, y, w, h, k) => {
+        g.fillStyle = `rgb(${Math.min(255, base[0] * k) | 0},${Math.min(255, base[1] * k) | 0},${Math.min(255, base[2] * k) | 0})`;
+        for (const dx of [0, N, -N]) g.fillRect(x + dx, y, w, h);
+      };
+      paint(x0 + 1, y0 + 1, S - 1, S - 1, 1); // камень
+      paint(x0 + 1, y0 + 1, S - 1, 1, 1.25); // светлая фаска сверху
+      paint(x0 + 1, y0 + 1, 1, S - 1, 1.15); // и слева
+      paint(x0 + 1, y0 + S - 1, S - 1, 1, 0.72); // тень снизу
+      paint(x0 + S - 1, y0 + 1, 1, S - 1, 0.8); // и справа
+      // иней: 2–3 пикселя
+      if (rnd() < 0.4) {
+        g.fillStyle = "rgba(236,242,252,0.85)";
+        const fx = x0 + 2 + Math.floor(rnd() * 4);
+        const fy = y0 + 2 + Math.floor(rnd() * 3);
+        for (const dx of [0, N, -N]) {
+          g.fillRect(fx + dx, fy, 2, 1);
+          if (rnd() < 0.5) g.fillRect(fx + dx + 1, fy + 1, 1, 1);
+        }
       }
-      x += w;
     }
   }
-  // снег, наметённый в швы
-  g.strokeStyle = "rgba(235,240,250,0.35)";
-  g.lineWidth = 2;
-  for (let r = 0; r <= rows; r++) {
-    g.beginPath();
-    g.moveTo(0, r * h);
-    g.lineTo(512, r * h);
-    g.stroke();
+  // снег в швах — отдельные пиксели
+  g.fillStyle = "rgba(230,236,248,0.7)";
+  for (let i = 0; i < 70; i++) {
+    const y = Math.floor(rnd() * (N / S)) * S;
+    g.fillRect(Math.floor(rnd() * N), y, 1 + Math.floor(rnd() * 2), 1);
   }
   const t = new THREE.CanvasTexture(c);
   t.colorSpace = THREE.SRGBColorSpace;
   t.wrapS = t.wrapT = THREE.RepeatWrapping;
-  t.repeat.set(22, 22);
+  t.magFilter = THREE.NearestFilter;
+  t.minFilter = THREE.NearestMipmapLinearFilter;
+  // один пиксель текстуры ≈ PX метров
+  const rep = (PLAZA_R * 2) / (N * PX);
+  t.repeat.set(rep, rep);
   t.anisotropy = 8;
   return t;
 }
 
-// Ярмарочный домик: деревянный сруб, полосатая крыша, тёплый свет в окне
+// Ярмарочный домик из кубиков: сруб, ступенчатая крыша, окно со светом
 function buildStall(rnd) {
   const g = new THREE.Group();
-  const wood = new THREE.MeshStandardMaterial({ color: "#6b4426", roughness: 0.85 });
-  const woodDark = new THREE.MeshStandardMaterial({ color: "#4a2d18", roughness: 0.9 });
-  const roofCol = ["#b91c1c", "#166534", "#1e3a8a", "#92400e"][Math.floor(rnd() * 4)];
-  const roof = new THREE.MeshStandardMaterial({ color: roofCol, roughness: 0.7 });
-  const snow = new THREE.MeshStandardMaterial({ color: "#f1f5fb", roughness: 0.6 });
-  const glow = new THREE.MeshStandardMaterial({ color: "#ffd59a", emissive: "#ffae4d", emissiveIntensity: 1.6 });
-  const base = new THREE.Mesh(new THREE.BoxGeometry(5, 3.2, 3.2), wood);
-  base.position.y = 1.6;
-  const counter = new THREE.Mesh(new THREE.BoxGeometry(5.3, 0.25, 1), woodDark);
-  counter.position.set(0, 1.35, 1.9);
-  const window_ = new THREE.Mesh(new THREE.PlaneGeometry(4, 1.5), glow);
-  window_.position.set(0, 2.2, 1.61);
-  const roofL = new THREE.Mesh(new THREE.BoxGeometry(5.8, 0.18, 2.4), roof);
-  roofL.position.set(0, 3.85, 0.85);
-  roofL.rotation.x = -0.6;
-  const roofR = roofL.clone();
-  roofR.position.z = -0.85;
-  roofR.rotation.x = 0.6;
-  const ridgeSnow = new THREE.Mesh(new THREE.BoxGeometry(5.9, 0.12, 2.0), snow);
-  ridgeSnow.position.set(0, 3.98, 0.75);
-  ridgeSnow.rotation.x = -0.6;
-  const ridgeSnow2 = ridgeSnow.clone();
-  ridgeSnow2.position.z = -0.75;
-  ridgeSnow2.rotation.x = 0.6;
-  for (const x of [-2.4, 2.4]) {
-    const post = new THREE.Mesh(new THREE.BoxGeometry(0.22, 3.6, 0.22), woodDark);
-    post.position.set(x, 1.8, 1.65);
-    g.add(post);
+  const WOOD = "#7a4a26";
+  const WOOD_D = "#4f2e17";
+  const roofCol = ["#c0262b", "#1d7a3e", "#2445a3", "#a3510f"][Math.floor(rnd() * 4)];
+  const roofHi = "#f4efe6";
+  const SNOW = "#f1f5fb";
+  const boxes = [
+    [5.06, 3.08, 3.08, 0, 1.54, 0, WOOD],
+    // брёвна-полосы
+    [5.17, 0.22, 3.19, 0, 0.55, 0, WOOD_D],
+    [5.17, 0.22, 3.19, 0, 2.75, 0, WOOD_D],
+    [5.39, 0.22, 0.99, 0, 1.32, 1.98, WOOD_D],
+    [0.22, 3.52, 0.22, -2.42, 1.76, 1.65, WOOD_D],
+    [0.22, 3.52, 0.22, 2.42, 1.76, 1.65, WOOD_D],
+  ];
+  // крыша ступеньками (полосатая), сверху снег
+  const steps = 5;
+  for (let i = 0; i < steps; i++) {
+    const depth = 3.96 - i * 0.77;
+    const col = i % 2 ? roofHi : roofCol;
+    boxes.push([5.72, 0.33, depth, 0, 3.24 + i * 0.33, 0, col]);
   }
-  g.add(base, counter, window_, roofL, roofR, ridgeSnow, ridgeSnow2);
+  boxes.push([5.83, 0.22, 0.88, 0, 3.24 + steps * 0.33, 0, SNOW]);
+  boxes.push([5.72, 0.11, 0.66, 0, 3.24 + 0.33 * 2 + 0.2, 1.25, SNOW]);
+  const body = voxMesh(boxes);
+  const glow = new THREE.MeshStandardMaterial({ color: "#ffd59a", emissive: "#ffae4d", emissiveIntensity: 1.6, flatShading: true });
+  const window_ = new THREE.Mesh(new THREE.BoxGeometry(3.96, 1.43, 0.11), glow);
+  window_.position.set(0, 2.15, 1.56);
+  g.add(body, window_);
   return { group: g, glowMat: glow };
 }
 
-// Скамейка: доски и чугунные ножки
+// Скамейка из кубиков: три доски, спинка, чугунные ножки, снег
 function buildBench() {
+  const WOOD = "#8a5a32";
+  const WOOD_D = "#6b4224";
+  const IRON = "#262b33";
+  const boxes = [];
+  for (let i = 0; i < 3; i++) boxes.push([3.3, 0.11, 0.22, 0, 0.88, -0.25 + i * 0.25, i % 2 ? WOOD_D : WOOD]);
+  for (let i = 0; i < 2; i++) boxes.push([3.3, 0.22, 0.11, 0, 1.32 + i * 0.33, -0.44, i % 2 ? WOOD_D : WOOD]);
+  for (const x of [-1.43, 1.43]) {
+    boxes.push([0.11, 0.88, 0.11, x, 0.44, 0.22, IRON]);
+    boxes.push([0.11, 1.76, 0.11, x, 0.88, -0.44, IRON]);
+    boxes.push([0.11, 0.11, 0.77, x, 0.77, -0.11, IRON]);
+  }
+  boxes.push([3.08, 0.11, 0.55, 0, 0.99, 0, "#f1f5fb"]);
   const g = new THREE.Group();
-  const wood = new THREE.MeshStandardMaterial({ color: "#7c4f2c", roughness: 0.8 });
-  const iron = new THREE.MeshStandardMaterial({ color: "#1f2328", metalness: 0.7, roughness: 0.4 });
-  for (let i = 0; i < 3; i++) {
-    const seat = new THREE.Mesh(new THREE.BoxGeometry(3.2, 0.1, 0.22), wood);
-    seat.position.set(0, 0.9, -0.25 + i * 0.25);
-    g.add(seat);
-  }
-  for (let i = 0; i < 2; i++) {
-    const back = new THREE.Mesh(new THREE.BoxGeometry(3.2, 0.2, 0.08), wood);
-    back.position.set(0, 1.3 + i * 0.3, -0.42);
-    back.rotation.x = -0.15;
-    g.add(back);
-  }
-  for (const x of [-1.4, 1.4]) {
-    const leg = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.9, 0.7), iron);
-    leg.position.set(x, 0.45, -0.1);
-    g.add(leg);
-  }
-  const snowCap = new THREE.Mesh(
-    new THREE.BoxGeometry(3.1, 0.06, 0.6),
-    new THREE.MeshStandardMaterial({ color: "#f1f5fb", roughness: 0.6 })
-  );
-  snowCap.position.set(0, 0.98, 0);
-  g.add(snowCap);
+  g.add(voxMesh(boxes));
   return g;
 }
 
@@ -292,19 +311,31 @@ export function createClearing({ foliage, isMobile = false }) {
   const cobbleTex = makeCobbleTexture();
   const plaza = new THREE.Mesh(
     new THREE.CircleGeometry(PLAZA_R, 96),
-    new THREE.MeshStandardMaterial({ map: cobbleTex, roughness: 0.78, metalness: 0.05, color: "#d9d4cf" })
+    new THREE.MeshStandardMaterial({ map: cobbleTex, roughness: 0.95, metalness: 0, color: "#d9d4cf" })
   );
   plaza.rotation.x = -Math.PI / 2;
   plaza.position.y = SNOW_Y + 0.03;
   plaza.receiveShadow = true;
   group.add(plaza);
-  const curb = new THREE.Mesh(
-    new THREE.TorusGeometry(PLAZA_R + 0.3, 0.45, 6, 160),
-    new THREE.MeshStandardMaterial({ color: "#8b8f97", roughness: 0.7 })
+  // бордюр — кольцо гранитных кубиков, цвета чуть разные
+  const curbCount = 150;
+  const curbLen = ((PLAZA_R + 0.3) * Math.PI * 2) / curbCount;
+  const curb = new THREE.InstancedMesh(
+    new THREE.BoxGeometry(curbLen - PX, PX * 3, PX * 6),
+    new THREE.MeshStandardMaterial({ roughness: 1, metalness: 0, flatShading: true }),
+    curbCount
   );
-  curb.rotation.x = Math.PI / 2;
-  curb.scale.z = 0.55;
-  curb.position.y = SNOW_Y + 0.1;
+  const curbTmp = new THREE.Object3D();
+  for (let i = 0; i < curbCount; i++) {
+    const a = (i / curbCount) * Math.PI * 2;
+    curbTmp.position.set(Math.cos(a) * (PLAZA_R + 0.3), SNOW_Y + PX * 1.5, Math.sin(a) * (PLAZA_R + 0.3));
+    curbTmp.rotation.set(0, -a + Math.PI / 2, 0);
+    curbTmp.updateMatrix();
+    curb.setMatrixAt(i, curbTmp.matrix);
+    const tone = 0.5 + ((i * 7919) % 5) * 0.035;
+    curb.setColorAt(i, _c.setRGB(tone, tone * 1.02, tone * 1.08));
+  }
+  curb.instanceMatrix.needsUpdate = true;
   group.add(curb);
 
   const outerLanterns = [];
@@ -359,11 +390,19 @@ export function createClearing({ foliage, isMobile = false }) {
   }
 
   // Мягкие сугробы: у подножия ели, вокруг фонарей и по поляне
-  const moundGeo = new THREE.SphereGeometry(1, 16, 10, 0, Math.PI * 2, 0, Math.PI / 2);
+  // сугроб-«ступенька» из трёх слоёв кубиков, как в пиксельных играх
+  const moundGeo = mergeGeometries(
+    [
+      [2, 0.34, 2, 0.17],
+      [1.5, 0.33, 1.4, 0.5],
+      [0.9, 0.33, 0.8, 0.83],
+    ].map(([w, h, d, y]) => new THREE.BoxGeometry(w, h, d).translate(0, y, 0)),
+    false
+  );
   const moundCount = isMobile ? 60 : 110;
   const mounds = new THREE.InstancedMesh(
     moundGeo,
-    new THREE.MeshStandardMaterial({ color: "#eef2fb", roughness: 0.9 }),
+    new THREE.MeshStandardMaterial({ color: "#eef2fb", roughness: 1, flatShading: true }),
     moundCount
   );
   for (let i = 0; i < moundCount; i++) {
@@ -391,8 +430,9 @@ export function createClearing({ foliage, isMobile = false }) {
       sc = 1.5 + rnd() * 4;
     }
     tmp.position.set(x, SNOW_Y - 0.05, z);
-    tmp.rotation.set(0, rnd() * Math.PI, 0);
-    tmp.scale.set(sc * (1 + rnd() * 0.8), sc * (0.18 + rnd() * 0.15), sc);
+    tmp.rotation.set(0, Math.atan2(x, z) + Math.floor(rnd() * 4) * (Math.PI / 2), 0);
+    const ss = sc * 0.75;
+    tmp.scale.set(ss * (1 + rnd() * 0.3), ss * (0.5 + rnd() * 0.25), ss);
     tmp.updateMatrix();
     mounds.setMatrixAt(i, tmp.matrix);
   }

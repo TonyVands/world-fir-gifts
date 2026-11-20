@@ -50,6 +50,20 @@ MAX_BOT_USERNAME = os.getenv("MAX_BOT_USERNAME", "").strip().lstrip("@")
 MAX_API_BASE = os.getenv("MAX_API_BASE", "https://platform-api.max.ru").strip().rstrip("/")
 # Свой шар можно переделать раз в N дней (0 — без ограничения).
 GIFT_EDIT_COOLDOWN_DAYS = max(0, _env_int("GIFT_EDIT_COOLDOWN_DAYS", 5))
+
+# --- Правовые документы (152-ФЗ) --------------------------------------------
+# Оператор персональных данных — тот, кто ведёт проект. Задаётся переменными
+# окружения; пока не задано, на страницах /legal видна заметная подсказка.
+OPERATOR_NAME = os.getenv("OPERATOR_NAME", "").strip()
+OPERATOR_STATUS = os.getenv("OPERATOR_STATUS", "").strip()  # «физическое лицо», «самозанятый», «ИП»
+OPERATOR_INN = os.getenv("OPERATOR_INN", "").strip()
+OPERATOR_EMAIL = os.getenv("OPERATOR_EMAIL", "").strip()
+OPERATOR_ADDRESS = os.getenv("OPERATOR_ADDRESS", "").strip()
+DATA_LOCATION = os.getenv("DATA_LOCATION", "").strip()  # «Российская Федерация, г. Москва»
+# Версия документов: при изменении текста — новая дата, и пользователи дают согласие заново
+LEGAL_VERSION = os.getenv("LEGAL_VERSION", "2026-11-21").strip()
+# После этой даты контакты для обмена удаляются автоматически (сезон закончился)
+PURGE_CONTACTS_AFTER = os.getenv("PURGE_CONTACTS_AFTER", "2027-03-31").strip()
 CANDLE_DAY_TZ = timezone(timedelta(hours=_env_int("CANDLE_DAY_UTC_OFFSET_H", 3)))
 
 
