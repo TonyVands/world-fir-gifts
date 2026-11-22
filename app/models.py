@@ -177,6 +177,9 @@ class Memorial(Base):
     death_date: Mapped[str] = mapped_column(String(10))  # ГГГГ-ММ-ДД
     epitaph: Mapped[str] = mapped_column(String(240), default="")
     relation: Mapped[str] = mapped_column(String(24), default="")
+    # Шар памяти: цвет «жизненной энергии» внутри шара и мелодия шкатулки
+    energy: Mapped[str] = mapped_column(String(16), default="light")
+    melody: Mapped[str] = mapped_column(String(24), default="quiet_candle")
     # {"w","h","palette":[...], "px": base64(индексы, 255 — пусто), "depth": base64(0..15)}
     portrait: Mapped[dict] = mapped_column(JSON)
     status: Mapped[str] = mapped_column(String(12), default="pending")  # pending|approved|rejected

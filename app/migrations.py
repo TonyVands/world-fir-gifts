@@ -114,8 +114,21 @@ def _add_user_consent(conn: Connection) -> None:
         logger.info("[Migrate] users.consent_at добавлена.")
 
 
+def _add_memorial_ball(conn: Connection) -> None:
+    cols = _columns(conn, "memorials")
+    if not cols:
+        return
+    if "energy" not in cols:
+        conn.execute(text("ALTER TABLE memorials ADD COLUMN energy VARCHAR(16) NOT NULL DEFAULT 'light'"))
+        logger.info("[Migrate] memorials.energy добавлена.")
+    if "melody" not in cols:
+        conn.execute(text("ALTER TABLE memorials ADD COLUMN melody VARCHAR(24) NOT NULL DEFAULT 'quiet_candle'"))
+        logger.info("[Migrate] memorials.melody добавлена.")
+
+
 def run_migrations(conn: Connection) -> None:
     _add_is_demo(conn)
+    _add_memorial_ball(conn)
     _add_user_consent(conn)
     _add_gift_edited_at(conn)
     _mark_demo_users(conn)

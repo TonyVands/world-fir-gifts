@@ -8559,6 +8559,20 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   openMemoryRef.current = (id) => setMemorySheet({ openId: id });
+  // Мелодии шаров памяти играет та же шкатулка, что и у подарков (по кругу, тише)
+  const memorialPlayer = useMemo(
+    () => ({
+      play: (m, id) => {
+        musicBoxSynth.setLooping(true);
+        musicBoxSynth.playMelody(m.tempo, m.celesta, m.harp, m.cello, m.flute, new Array(16).fill(0), null, id);
+      },
+      stop: () => {
+        musicBoxSynth.setLooping(false);
+        musicBoxSynth.stop();
+      },
+    }),
+    []
+  );
   const showMemoryOnTree = (m) => {
     const slot = memoryTierRef.current?.slotOf(m.id);
     setMemorySheet(null);
@@ -9468,6 +9482,7 @@ export default function App() {
           }}
           onChanged={reloadMemorials}
           onShowOnTree={showMemoryOnTree}
+          player={memorialPlayer}
         />
       )}
 

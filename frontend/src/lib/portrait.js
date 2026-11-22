@@ -2,8 +2,8 @@
 // Результат: { w, h, palette: ["#rrggbb"...], px: base64(индексы, 255 — пусто), depth: base64(0..15) }
 
 export const EMPTY = 255;
-export const PORTRAIT_W = 40;
-export const PORTRAIT_H = 48;
+export const PORTRAIT_W = 64;
+export const PORTRAIT_H = 80;
 
 export function loadImageFile(file) {
   return new Promise((resolve, reject) => {
@@ -86,7 +86,7 @@ function kmeans(points, k, iters = 10) {
   return { centers, assign };
 }
 
-export function pixelize(img, { w = PORTRAIT_W, h = PORTRAIT_H, zoom = 1, offX = 0, offY = 0, colors = 16, removeBg = true } = {}) {
+export function pixelize(img, { w = PORTRAIT_W, h = PORTRAIT_H, zoom = 1, offX = 0, offY = 0, colors = 24, removeBg = true } = {}) {
   const [sx, sy, sw, sh] = cropRect(img, w, h, zoom, offX, offY);
   // двухшаговое уменьшение — мягкое усреднение, без «шума» мелких деталей
   const mid = document.createElement("canvas");
@@ -136,8 +136,6 @@ export function pixelize(img, { w = PORTRAIT_W, h = PORTRAIT_H, zoom = 1, offX =
       if (x < 0 || y < 0 || x >= w || y >= h) continue;
       const i = y * w + x;
       if (empty[i] || dist(rgb[i], ref) > 30 || dist(rgb[i], seed) > 60) continue;
-      // нижние ряды не трогаем — там плечи и одежда
-      if (y > h * 0.82) continue;
       empty[i] = 1;
       removed++;
       stack.push([x + 1, y, rgb[i], seed], [x - 1, y, rgb[i], seed], [x, y + 1, rgb[i], seed], [x, y - 1, rgb[i], seed]);

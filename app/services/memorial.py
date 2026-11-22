@@ -26,7 +26,14 @@ from app.core import config
 logger = logging.getLogger("worldfir.memorial")
 
 EMPTY = 255
-MIN_SIDE, MAX_SIDE = 16, 64
+MIN_SIDE, MAX_SIDE = 16, 80
+
+# Должны совпадать с frontend/src/lib/memorialMelodies.js
+ENERGIES = ("light", "warm", "love", "wisdom", "nature", "strength", "sea")
+MELODIES = (
+    "moonlight", "chopin_prelude", "bach_air", "brahms_lullaby",
+    "quiet_candle", "warm_light", "snow_city", "way_home",
+)
 MAX_PALETTE = 32
 
 OTS_MAGIC = b"\x00OpenTimestamps\x00\x00Proof\x00\xbf\x89\xe2\xe8\x84\xe8\x92\x94"
@@ -53,7 +60,7 @@ def decode_portrait(p: dict) -> tuple[int, int, list[tuple[int, int, int]], byte
     except (TypeError, ValueError) as exc:
         raise PortraitError("Неверный размер портрета.") from exc
     if not (MIN_SIDE <= w <= MAX_SIDE and MIN_SIDE <= h <= MAX_SIDE):
-        raise PortraitError("Размер портрета — от 16 до 64 кубиков по стороне.")
+        raise PortraitError("Размер портрета — от 16 до 80 кубиков по стороне.")
     palette_raw = p.get("palette") or []
     if not isinstance(palette_raw, list) or not (1 <= len(palette_raw) <= MAX_PALETTE):
         raise PortraitError("В портрете от 1 до 32 цветов.")

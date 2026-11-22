@@ -28,6 +28,8 @@ def payload(**kw):
         "death_date": "2019-03-08",
         "epitaph": "Пекла самые вкусные пироги",
         "relation": "внучка",
+        "energy": "warm",
+        "melody": "moonlight",
         "portrait": portrait(),
         "heir_confirm": True,
         "pd_consent": True,
@@ -65,6 +67,7 @@ async def test_full_flow(client):
     assert res.status_code == 201, res.text
     mid = res.json()["id"]
     assert res.json()["status"] == "pending"
+    assert res.json()["energy"] == "warm" and res.json()["melody"] == "moonlight"
 
     # До проверки видна только автору
     assert (await client.get(f"/api/memorials/{mid}", headers=guest)).status_code == 404
@@ -131,3 +134,14 @@ def test_merge_calendar_replies():
 async def test_legal_memory_page(client):
     res = await client.get("/legal/memory")
     assert res.status_code == 200 and "152.1" in res.text
+
+
+async def test_detailed_portrait_and_unknown_choices(client):
+    h = session_headers("m7")
+    res = await client.post(
+        "/api/memorials", json=payload(portrait=portrait(64, 80), energy="evil", melody="x"), headers=h
+    )
+    assert res.status_code == 201, res.text
+    assert res.json()["energy"] == "light" and res.json()["melody"] == "quiet_candle"
+    too_big = await client.post("/api/memorials", json=payload(portrait=portrait(64, 96)), headers=h)
+    assert too_big.status_code == 422

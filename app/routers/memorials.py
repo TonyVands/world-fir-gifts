@@ -32,6 +32,8 @@ class MemorialCreate(BaseModel):
     death_date: str = Field(min_length=10, max_length=10)
     epitaph: str = Field(default="", max_length=240)
     relation: str = Field(default="", max_length=24)
+    energy: str = Field(default="light", max_length=16)
+    melody: str = Field(default="quiet_candle", max_length=24)
     portrait: dict
     heir_confirm: bool = False
     pd_consent: bool = False
@@ -54,6 +56,8 @@ def _dto(m: Memorial, *, mine: bool = False, lit_today: bool = False, portrait: 
         "death_date": m.death_date,
         "epitaph": m.epitaph or "",
         "candles": m.candles_count or 0,
+        "energy": m.energy or "light",
+        "melody": m.melody or "quiet_candle",
         "status": m.status,
         "mine": mine,
         "lit_today": lit_today,
@@ -144,6 +148,8 @@ async def create_memorial(
         death_date=body.death_date.strip(),
         epitaph=epitaph,
         relation=relation,
+        energy=body.energy if body.energy in memsvc.ENERGIES else "light",
+        melody=body.melody if body.melody in memsvc.MELODIES else "quiet_candle",
         portrait=portrait,
         consent_version=config.LEGAL_VERSION,
         created_at=datetime.now(timezone.utc),

@@ -10,6 +10,7 @@ import {
   reportMemorial,
 } from "../api.js";
 import { decodePortrait, EMPTY, loadImageFile, pixelize, portraitToCanvas } from "../lib/portrait.js";
+import { energyById, MEMORIAL_ENERGIES, MEMORIAL_MELODIES, melodyById } from "../lib/memorialMelodies.js";
 
 const glassPanel =
   "bg-[#070d1c]/85 backdrop-blur-xl border border-white/10 shadow-[0_10px_40px_rgba(0,0,0,0.45)]";
@@ -30,7 +31,7 @@ export function memorialYears(m) {
 // ---------------------------------------------------------------------------
 // Объёмный пиксельный портрет (барельеф из кубиков), можно покрутить пальцем
 // ---------------------------------------------------------------------------
-export function PortraitRelief({ portrait, size = 240, autoSwing = true }) {
+export function PortraitRelief({ portrait, size = 240, autoSwing = true, energy = null }) {
   const mountRef = useRef(null);
   useEffect(() => {
     const d = decodePortrait(portrait);
@@ -86,6 +87,38 @@ export function PortraitRelief({ portrait, size = 240, autoSwing = true }) {
     const pivot = new THREE.Group();
     pivot.add(mesh);
     scene.add(pivot);
+
+    // «Жизненная энергия» — огоньки кружат вокруг портрета
+    let motes = null;
+    const MOTES = 140;
+    const orbit = [];
+    if (energy) {
+      const pos = new Float32Array(MOTES * 3);
+      const mg = new THREE.BufferGeometry();
+      mg.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+      const c = document.createElement("canvas");
+      c.width = c.height = 32;
+      const g2 = c.getContext("2d");
+      const gr = g2.createRadialGradient(16, 16, 0, 16, 16, 16);
+      gr.addColorStop(0, "rgba(255,255,255,1)");
+      gr.addColorStop(0.4, "rgba(255,255,255,0.45)");
+      gr.addColorStop(1, "rgba(255,255,255,0)");
+      g2.fillStyle = gr;
+      g2.fillRect(0, 0, 32, 32);
+      const tex = new THREE.CanvasTexture(c);
+      const mm = new THREE.PointsMaterial({ color: energy, map: tex, size: 3.6, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
+      motes = new THREE.Points(mg, mm);
+      for (let i = 0; i < MOTES; i++) {
+        orbit.push({
+          r: d.w * (0.42 + Math.random() * 0.3),
+          s: (0.2 + Math.random() * 0.45) * (i % 2 ? 1 : -1),
+          p: Math.random() * Math.PI * 2,
+          y: (Math.random() - 0.5) * d.h * 1.05,
+          t: (Math.random() - 0.5) * 0.9,
+        });
+      }
+      scene.add(motes);
+    }
     const cam = new THREE.PerspectiveCamera(32, W / H, 1, 1000);
     const dist = (d.h / 2 / Math.tan((32 * Math.PI) / 360)) * 1.12;
     cam.position.set(0, 0, dist + 6);
@@ -122,6 +155,18 @@ export function PortraitRelief({ portrait, size = 240, autoSwing = true }) {
         rotX += (Math.sin(t * 0.37) * 0.08 - rotX) * 0.05;
       }
       pivot.rotation.set(rotX, rotY, 0);
+      if (motes) {
+        const t = (now - t0) / 1000;
+        const arr = motes.geometry.attributes.position.array;
+        for (let i = 0; i < orbit.length; i++) {
+          const o = orbit[i];
+          const a = t * o.s + o.p;
+          arr[i * 3] = Math.cos(a) * o.r;
+          arr[i * 3 + 1] = o.y + Math.sin(a * 1.3 + o.p) * 2 + Math.sin(a) * o.r * o.t;
+          arr[i * 3 + 2] = Math.sin(a) * o.r * 0.7 + 4;
+        }
+        motes.geometry.attributes.position.needsUpdate = true;
+      }
       renderer.render(scene, cam);
       raf = requestAnimationFrame(loop);
     };
@@ -134,12 +179,64 @@ export function PortraitRelief({ portrait, size = 240, autoSwing = true }) {
       el.removeEventListener("pointercancel", onUp);
       geo.dispose();
       mat.dispose();
+      if (motes) {
+        motes.geometry.dispose();
+        motes.material.map?.dispose();
+        motes.material.dispose();
+      }
       renderer.dispose();
       renderer.forceContextLoss?.();
       el.innerHTML = "";
     };
-  }, [portrait, size, autoSwing]);
+  }, [portrait, size, autoSwing, energy]);
   return <div ref={mountRef} className="mx-auto touch-none select-none" style={{ width: size }} aria-label="Объёмный пиксельный портрет" />;
+}
+
+// Портрет внутри «шара памяти»: стеклянная линза с отсветом энергии
+function MemoryBall({ portrait, energyId, size = 230 }) {
+  const e = energyById(energyId);
+  const d = Math.round(size * 1.12);
+  return (
+    <div
+      className="relative mx-auto rounded-full flex items-center justify-center overflow-hidden"
+      style={{
+        width: d,
+        height: d,
+        background: `radial-gradient(circle at 50% 55%, ${e.color}22 0%, #0b1124 62%, #070b18 100%)`,
+        boxShadow: `inset 0 0 40px ${e.color}55, inset 0 0 4px #ffffff66, 0 0 34px ${e.color}33`,
+        border: "1px solid rgba(255,255,255,0.18)",
+      }}
+    >
+      <PortraitRelief portrait={portrait} size={Math.round(size * 0.78)} energy={e.color} />
+      <div className="pointer-events-none absolute rounded-full" style={{ left: "16%", top: "9%", width: "30%", height: "16%", background: "radial-gradient(ellipse, rgba(255,255,255,0.35), rgba(255,255,255,0) 70%)", transform: "rotate(-24deg)" }} />
+      <div className="pointer-events-none absolute -top-0.5 left-1/2 -translate-x-1/2 w-9 h-3 rounded-b-md bg-gradient-to-b from-[#e7c77d] to-[#a8823e]" />
+    </div>
+  );
+}
+
+function MelodyButton({ melodyId, player, playId }) {
+  const [playing, setPlaying] = useState(false);
+  useEffect(() => () => playing && player?.stop(), [playing]); // eslint-disable-line react-hooks/exhaustive-deps
+  if (!player) return null;
+  const m = melodyById(melodyId);
+  const toggle = () => {
+    if (playing) {
+      player.stop();
+      setPlaying(false);
+    } else {
+      player.play(m, playId);
+      setPlaying(true);
+    }
+  };
+  return (
+    <button type="button" onClick={toggle} className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl bg-white/[0.05] border border-white/10 text-left">
+      <span className="w-8 h-8 rounded-full bg-sky-200 text-slate-950 flex items-center justify-center text-sm shrink-0">{playing ? "❚❚" : "▶"}</span>
+      <span className="min-w-0">
+        <span className="block text-sm text-slate-100 truncate">{m.title}</span>
+        <span className="block text-[11px] text-slate-500 truncate">{m.author}</span>
+      </span>
+    </button>
+  );
 }
 
 function PortraitThumb({ portrait, size = 72 }) {
@@ -163,7 +260,7 @@ function Checkbox({ checked, onChange, children }) {
 // ---------------------------------------------------------------------------
 // Создание памяти
 // ---------------------------------------------------------------------------
-function CreateMemory({ onDone, onCancel }) {
+function CreateMemory({ onDone, onCancel, player }) {
   const [imgState, setImgState] = useState(null); // { img, url }
   const [zoom, setZoom] = useState(1.2);
   const [offY, setOffY] = useState(-0.05);
@@ -174,6 +271,19 @@ function CreateMemory({ onDone, onCancel }) {
   const [death, setDeath] = useState("");
   const [epitaph, setEpitaph] = useState("");
   const [relation, setRelation] = useState("");
+  const [energy, setEnergy] = useState("light");
+  const [melody, setMelody] = useState("quiet_candle");
+  const [preview, setPreview] = useState(null);
+  useEffect(() => () => player?.stop(), []); // eslint-disable-line react-hooks/exhaustive-deps
+  const togglePreview = (m) => {
+    if (preview === m.id) {
+      player?.stop();
+      setPreview(null);
+    } else {
+      player?.play(m, "memorial-preview");
+      setPreview(m.id);
+    }
+  };
   const [heir, setHeir] = useState(false);
   const [pd, setPd] = useState(false);
   const [terms, setTerms] = useState(false);
@@ -217,6 +327,8 @@ function CreateMemory({ onDone, onCancel }) {
         death_date: death,
         epitaph: epitaph.trim(),
         relation: relation.trim(),
+        energy,
+        melody,
         portrait,
         heir_confirm: heir,
         pd_consent: pd,
@@ -246,9 +358,9 @@ function CreateMemory({ onDone, onCancel }) {
 
       {portrait && (
         <div className="space-y-3">
-          <div className="rounded-2xl bg-gradient-to-b from-[#16203f] to-[#0b1124] border border-white/10 py-3">
-            <PortraitRelief portrait={portrait} size={220} />
-            <div className="text-center text-[11px] text-slate-500 mt-1">Покрутите пальцем</div>
+          <div className="py-2">
+            <MemoryBall portrait={portrait} energyId={energy} size={210} />
+            <div className="text-center text-[11px] text-slate-500 mt-2">Покрутите портрет пальцем</div>
           </div>
           <div className="grid grid-cols-3 gap-3 text-[11px] text-slate-400">
             <label className="space-y-1">
@@ -286,6 +398,42 @@ function CreateMemory({ onDone, onCancel }) {
         <input className={input} maxLength={24} placeholder="Кем вам приходится (внучка, сын…)" value={relation} onChange={(e) => setRelation(e.target.value)} />
       </div>
 
+      <div className="space-y-2">
+        <div className="text-[11px] uppercase tracking-wider text-slate-500">Энергия жизни — свет внутри шара</div>
+        <div className="flex flex-wrap gap-1.5">
+          {MEMORIAL_ENERGIES.map((e) => (
+            <button
+              key={e.id}
+              type="button"
+              onClick={() => setEnergy(e.id)}
+              aria-pressed={energy === e.id}
+              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-full border text-[12px] ${energy === e.id ? "bg-white/15 border-white/40 text-white" : "bg-white/5 border-white/10 text-slate-300"}`}
+            >
+              <span className="w-3 h-3 rounded-full" style={{ background: e.color, boxShadow: `0 0 8px ${e.color}` }} />
+              {e.title}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="space-y-2">
+        <div className="text-[11px] uppercase tracking-wider text-slate-500">Мелодия шкатулки</div>
+        <div className="grid grid-cols-1 gap-1.5">
+          {MEMORIAL_MELODIES.map((m) => (
+            <div key={m.id} className={`flex items-center gap-2 px-2 py-1.5 rounded-xl border ${melody === m.id ? "bg-sky-300/10 border-sky-200/40" : "bg-white/[0.03] border-white/10"}`}>
+              <button type="button" onClick={() => togglePreview(m)} aria-label={`Послушать «${m.title}»`} className="w-8 h-8 rounded-full bg-white/10 text-slate-100 text-xs shrink-0">
+                {preview === m.id ? "❚❚" : "▶"}
+              </button>
+              <button type="button" onClick={() => setMelody(m.id)} className="flex-1 min-w-0 text-left">
+                <span className="block text-[13px] text-slate-100 truncate">{m.title}</span>
+                <span className="block text-[10px] text-slate-500 truncate">{m.author}</span>
+              </button>
+              {melody === m.id && <span className="text-sky-200 text-sm pr-1">✓</span>}
+            </div>
+          ))}
+        </div>
+      </div>
+
       <div className="space-y-2 p-3 rounded-xl bg-white/[0.03] border border-white/10 text-[12px] leading-snug text-slate-300">
         <Checkbox checked={heir} onChange={setHeir}>
           Я близкий родственник (супруг, ребёнок, родитель) или наследник этого человека
@@ -307,7 +455,7 @@ function CreateMemory({ onDone, onCancel }) {
         </button>
       </div>
       <div className="text-[11px] text-slate-500 text-center">
-        После проверки модератором память появится на нижнем ярусе Ёлки, а её отпечаток будет записан в блокчейн Bitcoin.
+        После проверки модератором шар памяти появится на нижнем ярусе Ёлки, а её отпечаток будет записан в блокчейн Bitcoin.
       </div>
     </div>
   );
@@ -316,7 +464,7 @@ function CreateMemory({ onDone, onCancel }) {
 // ---------------------------------------------------------------------------
 // Карточка одной памяти
 // ---------------------------------------------------------------------------
-function MemoryCard({ id, initial, onBack, onChanged, onShowOnTree }) {
+function MemoryCard({ id, initial, onBack, onChanged, onShowOnTree, player }) {
   const [m, setM] = useState(initial || null);
   const [error, setError] = useState("");
   const [lighting, setLighting] = useState(false);
@@ -379,8 +527,9 @@ function MemoryCard({ id, initial, onBack, onChanged, onShowOnTree }) {
 
   return (
     <div className="space-y-4 text-center">
-      <div className="rounded-2xl bg-gradient-to-b from-[#16203f] to-[#0b1124] border border-white/10 py-4">
-        <PortraitRelief portrait={m.portrait} size={230} />
+      <div className="py-2">
+        <MemoryBall portrait={m.portrait} energyId={m.energy} size={230} />
+        <div className="mt-2 text-[11px] text-slate-500">Энергия жизни: {energyById(m.energy).title}</div>
       </div>
       <div>
         <div className="font-serif text-2xl text-amber-50">{m.full_name}</div>
@@ -399,6 +548,8 @@ function MemoryCard({ id, initial, onBack, onChanged, onShowOnTree }) {
       {m.status === "rejected" && (
         <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-400/40 text-xs text-rose-200">Модератор не одобрил эту память.</div>
       )}
+
+      <MelodyButton melodyId={m.melody} player={player} playId={`memorial-${m.id}`} />
 
       {m.status === "approved" && (
         <>
@@ -461,7 +612,7 @@ function MemoryCard({ id, initial, onBack, onChanged, onShowOnTree }) {
 // ---------------------------------------------------------------------------
 // Окно «Ярус памяти»
 // ---------------------------------------------------------------------------
-export function MemorySheet({ openId = null, startCreate = false, onClose, onChanged, onShowOnTree }) {
+export function MemorySheet({ openId = null, startCreate = false, onClose, onChanged, onShowOnTree, player = null }) {
   const [view, setView] = useState(openId ? { kind: "card", id: openId } : startCreate ? { kind: "create" } : { kind: "list" });
   const [data, setData] = useState(null);
   const [query, setQuery] = useState("");
@@ -486,18 +637,19 @@ export function MemorySheet({ openId = null, startCreate = false, onClose, onCha
 
   return (
     <div className="fixed inset-0 z-[58] bg-slate-950/75 backdrop-blur-sm flex items-end sm:items-center justify-center sm:p-4" role="dialog" aria-modal="true" aria-label="Ярус памяти">
-      <button type="button" aria-label="Закрыть фон" onClick={onClose} className="absolute inset-0" />
+      <button type="button" aria-label="Закрыть фон" onClick={() => { player?.stop(); onClose(); }} className="absolute inset-0" />
       <div className={`${glassPanel} relative w-full max-w-lg wfg-mh-88 flex flex-col rounded-t-3xl sm:rounded-3xl overflow-hidden`}>
         <div className="p-4 pb-3 border-b border-white/10 flex items-center justify-between">
           <div>
             <div className="font-serif text-xl text-sky-50">🕊 Ярус памяти</div>
             <div className="text-[11px] text-slate-400">Тихий нижний ярус Ёлки — для тех, кого с нами нет</div>
           </div>
-          <button type="button" onClick={onClose} aria-label="Закрыть" className="w-10 h-10 rounded-xl bg-white/10 text-slate-200 text-lg">✕</button>
+          <button type="button" onClick={() => { player?.stop(); onClose(); }} aria-label="Закрыть" className="w-10 h-10 rounded-xl bg-white/10 text-slate-200 text-lg">✕</button>
         </div>
         <div className="p-4 overflow-y-auto flex-1">
           {view.kind === "create" && (
             <CreateMemory
+              player={player}
               onCancel={() => setView({ kind: "list" })}
               onDone={(m) => {
                 setSent(true);
@@ -514,6 +666,7 @@ export function MemorySheet({ openId = null, startCreate = false, onClose, onCha
               onBack={() => setView({ kind: "list" })}
               onChanged={changed}
               onShowOnTree={onShowOnTree}
+              player={player}
             />
           )}
           {view.kind === "list" && (
