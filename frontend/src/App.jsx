@@ -8564,8 +8564,9 @@ export default function App() {
     () => ({
       play: (m, id) => {
         musicBoxSynth.setLooping(true);
-        musicBoxSynth.playMelody(m.tempo, m.celesta, m.harp, m.cello, m.flute, new Array(16).fill(0), null, id);
+        musicBoxSynth.playMelody(m.tempo, m.celesta, m.harp, m.cello, m.flute, new Array(16).fill(0), null, id, m.voices || null);
       },
+      note: (slot, idx, voice) => musicBoxSynth.playSingleNote(slot, idx, voice || null),
       stop: () => {
         musicBoxSynth.setLooping(false);
         musicBoxSynth.stop();

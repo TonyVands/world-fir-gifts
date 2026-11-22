@@ -180,6 +180,8 @@ class Memorial(Base):
     # Шар памяти: цвет «жизненной энергии» внутри шара и мелодия шкатулки
     energy: Mapped[str] = mapped_column(String(16), default="light")
     melody: Mapped[str] = mapped_column(String(24), default="quiet_candle")
+    # Собственная мелодия близких (melody == "custom"): {tempo_bpm, *_track, voices}
+    melody_custom: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
     # {"w","h","palette":[...], "px": base64(индексы, 255 — пусто), "depth": base64(0..15)}
     portrait: Mapped[dict] = mapped_column(JSON)
     status: Mapped[str] = mapped_column(String(12), default="pending")  # pending|approved|rejected

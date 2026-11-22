@@ -10,7 +10,8 @@ import {
   reportMemorial,
 } from "../api.js";
 import { decodePortrait, EMPTY, loadImageFile, pixelize, portraitToCanvas } from "../lib/portrait.js";
-import { energyById, MEMORIAL_ENERGIES, MEMORIAL_MELODIES, melodyById } from "../lib/memorialMelodies.js";
+import { customNoteCount, customToApi, emptyCustom, energyById, MEMORIAL_ENERGIES, MEMORIAL_MELODIES, resolveMelody } from "../lib/memorialMelodies.js";
+import MelodyComposer from "./MelodyComposer.jsx";
 
 const glassPanel =
   "bg-[#070d1c]/85 backdrop-blur-xl border border-white/10 shadow-[0_10px_40px_rgba(0,0,0,0.45)]";
@@ -214,11 +215,11 @@ function MemoryBall({ portrait, energyId, size = 230 }) {
   );
 }
 
-function MelodyButton({ melodyId, player, playId }) {
+function MelodyButton({ melodyId, custom, player, playId }) {
   const [playing, setPlaying] = useState(false);
   useEffect(() => () => playing && player?.stop(), [playing]); // eslint-disable-line react-hooks/exhaustive-deps
   if (!player) return null;
-  const m = melodyById(melodyId);
+  const m = resolveMelody(melodyId, custom);
   const toggle = () => {
     if (playing) {
       player.stop();
@@ -273,7 +274,25 @@ function CreateMemory({ onDone, onCancel, player }) {
   const [relation, setRelation] = useState("");
   const [energy, setEnergy] = useState("light");
   const [melody, setMelody] = useState("quiet_candle");
+  const [custom, setCustom] = useState(() => emptyCustom());
   const [preview, setPreview] = useState(null);
+  const customToPlayer = () => ({ id: "custom", tempo: custom.tempo, celesta: custom.celesta, harp: custom.harp, cello: custom.cello, flute: custom.flute, voices: custom.voices });
+  const toggleCustomPlay = () => {
+    if (preview === "custom") {
+      player?.stop();
+      setPreview(null);
+    } else {
+      player?.play(customToPlayer(), "memorial-preview");
+      setPreview("custom");
+    }
+  };
+  const pickCustom = () => {
+    if (preview && preview !== "custom") {
+      player?.stop();
+      setPreview(null);
+    }
+    setMelody("custom");
+  };
   useEffect(() => () => player?.stop(), []); // eslint-disable-line react-hooks/exhaustive-deps
   const togglePreview = (m) => {
     if (preview === m.id) {
@@ -315,7 +334,7 @@ function CreateMemory({ onDone, onCancel, player }) {
 
   const today = new Date().toISOString().slice(0, 10);
   const birthOk = !birth || /^\d{4}$/.test(birth) || /^\d{4}-\d{2}-\d{2}$/.test(birth);
-  const canSubmit = portrait && name.trim().length >= 2 && /^\d{4}-\d{2}-\d{2}$/.test(death) && birthOk && heir && pd && terms && !busy;
+  const canSubmit = portrait && name.trim().length >= 2 && /^\d{4}-\d{2}-\d{2}$/.test(death) && birthOk && heir && pd && terms && (melody !== "custom" || customNoteCount(custom) >= 4) && !busy;
 
   const submit = async () => {
     setBusy(true);
@@ -329,6 +348,7 @@ function CreateMemory({ onDone, onCancel, player }) {
         relation: relation.trim(),
         energy,
         melody,
+        ...(melody === "custom" ? { melody_custom: customToApi(custom) } : {}),
         portrait,
         heir_confirm: heir,
         pd_consent: pd,
@@ -431,6 +451,21 @@ function CreateMemory({ onDone, onCancel, player }) {
               {melody === m.id && <span className="text-sky-200 text-sm pr-1">✓</span>}
             </div>
           ))}
+          <div className={`rounded-xl border ${melody === "custom" ? "bg-sky-300/10 border-sky-200/40" : "bg-white/[0.03] border-white/10"}`}>
+            <button type="button" onClick={pickCustom} className="w-full flex items-center gap-2 px-2 py-2 text-left">
+              <span className="w-8 h-8 rounded-full bg-white/10 text-sm shrink-0 flex items-center justify-center">✍️</span>
+              <span className="flex-1 min-w-0">
+                <span className="block text-[13px] text-slate-100">Сочинить свою мелодию</span>
+                <span className="block text-[10px] text-slate-500">шаг за шагом, тихими голосами</span>
+              </span>
+              {melody === "custom" && <span className="text-sky-200 text-sm pr-1">✓</span>}
+            </button>
+            {melody === "custom" && (
+              <div className="p-2 pt-0">
+                <MelodyComposer value={custom} onChange={setCustom} player={player} playing={preview === "custom"} onTogglePlay={toggleCustomPlay} />
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
@@ -549,7 +584,7 @@ function MemoryCard({ id, initial, onBack, onChanged, onShowOnTree, player }) {
         <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-400/40 text-xs text-rose-200">Модератор не одобрил эту память.</div>
       )}
 
-      <MelodyButton melodyId={m.melody} player={player} playId={`memorial-${m.id}`} />
+      <MelodyButton melodyId={m.melody} custom={m.melody_custom} player={player} playId={`memorial-${m.id}`} />
 
       {m.status === "approved" && (
         <>

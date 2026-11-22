@@ -33,7 +33,17 @@ ENERGIES = ("light", "warm", "love", "wisdom", "nature", "strength", "sea")
 MELODIES = (
     "moonlight", "chopin_prelude", "bach_air", "brahms_lullaby",
     "quiet_candle", "warm_light", "snow_city", "way_home",
+    "custom",  # своя мелодия близких, хранится в Memorial.melody_custom
 )
+
+CUSTOM_MIN_NOTES = 4
+CUSTOM_TEMPO = (60, 96)  # тихие, неспешные мелодии
+CUSTOM_VOICES = {
+    "celesta": ("celesta", "musicbox", "piano", "bells"),
+    "harp": ("harp", "guitar", "piano", "epiano"),
+    "cello": ("cello", "strings", "pad", "bass"),
+    "flute": ("flute", "choir", "pad", "clarinet", "violin"),
+}
 MAX_PALETTE = 32
 
 OTS_MAGIC = b"\x00OpenTimestamps\x00\x00Proof\x00\xbf\x89\xe2\xe8\x84\xe8\x92\x94"
@@ -237,3 +247,33 @@ async def retry_failed_stamps(session) -> int:
     if rows:
         await session.commit()
     return done
+
+
+def validate_custom_melody(raw: dict | None) -> dict:
+    """Проверяет мелодию, сочинённую близкими, и возвращает её в нормальном виде."""
+    from pydantic import ValidationError
+
+    from app.schemas import MelodyInput
+
+    if not isinstance(raw, dict):
+        raise PortraitError("Не хватает мелодии: сочините её или выберите готовую.")
+    try:
+        mel = MelodyInput.model_validate(raw)
+    except ValidationError as exc:
+        raise PortraitError("Мелодия повреждена. Попробуйте сочинить её ещё раз.") from exc
+    lo, hi = CUSTOM_TEMPO
+    if not (lo <= mel.tempo_bpm <= hi):
+        raise PortraitError(f"Темп мелодии памяти — от {lo} до {hi} ударов в минуту.")
+    tracks = {
+        "celesta_track": mel.celesta_track,
+        "harp_track": mel.harp_track,
+        "cello_track": mel.cello_track,
+        "flute_track": mel.flute_track,
+    }
+    if sum(1 for t in tracks.values() for n in t if n > 0) < CUSTOM_MIN_NOTES:
+        raise PortraitError(f"В мелодии должно быть хотя бы {CUSTOM_MIN_NOTES} ноты.")
+    voices = {}
+    for slot, voice in (mel.voices or {}).items():
+        if voice in CUSTOM_VOICES.get(slot, ()):  # только мягкие тембры
+            voices[slot] = voice
+    return {"tempo_bpm": mel.tempo_bpm, **tracks, "voices": voices}

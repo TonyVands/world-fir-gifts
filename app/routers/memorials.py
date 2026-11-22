@@ -34,6 +34,7 @@ class MemorialCreate(BaseModel):
     relation: str = Field(default="", max_length=24)
     energy: str = Field(default="light", max_length=16)
     melody: str = Field(default="quiet_candle", max_length=24)
+    melody_custom: dict | None = None
     portrait: dict
     heir_confirm: bool = False
     pd_consent: bool = False
@@ -58,6 +59,7 @@ def _dto(m: Memorial, *, mine: bool = False, lit_today: bool = False, portrait: 
         "candles": m.candles_count or 0,
         "energy": m.energy or "light",
         "melody": m.melody or "quiet_candle",
+        "melody_custom": m.melody_custom if m.melody == "custom" else None,
         "status": m.status,
         "mine": mine,
         "lit_today": lit_today,
@@ -138,6 +140,7 @@ async def create_memorial(
     try:
         memsvc.validate_dates(body.birth_date.strip(), body.death_date.strip())
         portrait = memsvc.normalize_portrait(body.portrait)
+        custom = memsvc.validate_custom_melody(body.melody_custom) if body.melody == "custom" else None
     except memsvc.PortraitError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -150,6 +153,7 @@ async def create_memorial(
         relation=relation,
         energy=body.energy if body.energy in memsvc.ENERGIES else "light",
         melody=body.melody if body.melody in memsvc.MELODIES else "quiet_candle",
+        melody_custom=custom,
         portrait=portrait,
         consent_version=config.LEGAL_VERSION,
         created_at=datetime.now(timezone.utc),

@@ -105,3 +105,98 @@ export const MEMORIAL_ENERGIES = [
 ];
 
 export const energyById = (id) => MEMORIAL_ENERGIES.find((e) => e.id === id) || MEMORIAL_ENERGIES[0];
+
+// ---------------------------------------------------------------------------
+// Своя мелодия близких. Все ноты — пентатоника до мажора: любое сочетание звучит мягко.
+// Ряды сверху вниз: D6 C6 A5 G5 E5 D5 C5 A4 G4 E4 D4 C4. Бэкенд принимает только эти тембры.
+// ---------------------------------------------------------------------------
+export const CUSTOM_ROWS = [
+  { note: 14, label: "D6" },
+  { note: 13, label: "C6" },
+  { note: 11, label: "A5" },
+  { note: 10, label: "G5" },
+  { note: 9, label: "E5" },
+  { note: 8, label: "D5" },
+  { note: 7, label: "C5" },
+  { note: 5, label: "A4" },
+  { note: 4, label: "G4" },
+  { note: 3, label: "E4" },
+  { note: 2, label: "D4" },
+  { note: 1, label: "C4" },
+];
+
+export const CUSTOM_TRACKS = [
+  { slot: "celesta", key: "celesta", title: "Мотив", hint: "главная мелодия", color: "#ffd98a" },
+  { slot: "harp", key: "harp", title: "Аккомпанемент", hint: "плавный перебор", color: "#9fd0ff" },
+  { slot: "cello", key: "cello", title: "Бас", hint: "долгие низкие ноты", color: "#ff9fb8" },
+  { slot: "flute", key: "flute", title: "Голос", hint: "тихая линия сверху", color: "#a8f0c0" },
+];
+
+export const CUSTOM_VOICES = {
+  celesta: [["celesta", "Челеста"], ["musicbox", "Шкатулка"], ["piano", "Пианино"], ["bells", "Колокольчики"]],
+  harp: [["harp", "Арфа"], ["guitar", "Гитара"], ["piano", "Пианино"], ["epiano", "Электропиано"]],
+  cello: [["cello", "Виолончель"], ["strings", "Струнные"], ["pad", "Пэд"], ["bass", "Бас"]],
+  flute: [["flute", "Флейта"], ["choir", "Хор"], ["pad", "Пэд"], ["clarinet", "Кларнет"], ["violin", "Скрипка"]],
+};
+
+export const CUSTOM_TEMPO = [60, 92];
+
+// Заготовки: запускают сочинение, чтобы не начинать с тишины
+export const CUSTOM_STARTERS = [
+  {
+    title: "Спокойный перебор",
+    tempo: 66,
+    harp: [1, 0, 4, 0, 7, 0, 4, 0, 2, 0, 5, 0, 8, 0, 5, 0],
+    cello: [1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0],
+  },
+  {
+    title: "Светлая нота",
+    tempo: 72,
+    celesta: [9, 0, 0, 10, 0, 0, 9, 0, 8, 0, 0, 7, 0, 0, 0, 0],
+    cello: [1, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0],
+  },
+  {
+    title: "Длинные голоса",
+    tempo: 60,
+    flute: [10, 0, 0, 0, 9, 0, 0, 0, 8, 0, 0, 0, 7, 0, 0, 0],
+    cello: [1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0],
+  },
+];
+
+export const emptyCustom = () => ({
+  tempo: 68,
+  celesta: Z(),
+  harp: Z(),
+  cello: Z(),
+  flute: Z(),
+  voices: { celesta: "celesta", harp: "harp", cello: "cello", flute: "flute" },
+});
+
+export const customNoteCount = (c) =>
+  c ? ["celesta", "harp", "cello", "flute"].reduce((n, k) => n + (c[k] || []).filter((v) => v > 0).length, 0) : 0;
+
+// → тело для API (melody_custom)
+export const customToApi = (c) => ({
+  tempo_bpm: c.tempo,
+  celesta_track: c.celesta,
+  harp_track: c.harp,
+  cello_track: c.cello,
+  flute_track: c.flute,
+  voices: c.voices,
+});
+
+// ← из ответа API в форму, понятную плееру
+export const customFromApi = (api) => ({
+  id: "custom",
+  title: "Мелодия близких",
+  author: "сочинена своими руками",
+  tempo: api.tempo_bpm,
+  celesta: api.celesta_track,
+  harp: api.harp_track,
+  cello: api.cello_track,
+  flute: api.flute_track,
+  voices: api.voices || {},
+});
+
+// Готовая или своя мелодия по данным памяти
+export const resolveMelody = (id, customApi) => (id === "custom" && customApi ? customFromApi(customApi) : melodyById(id));

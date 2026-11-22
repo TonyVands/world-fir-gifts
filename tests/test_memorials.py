@@ -145,3 +145,48 @@ async def test_detailed_portrait_and_unknown_choices(client):
     assert res.json()["energy"] == "light" and res.json()["melody"] == "quiet_candle"
     too_big = await client.post("/api/memorials", json=payload(portrait=portrait(64, 96)), headers=h)
     assert too_big.status_code == 422
+
+
+def custom_melody(**kw):
+    base = {
+        "tempo_bpm": 72,
+        "celesta_track": [9, 0, 0, 10, 0, 0, 9, 0, 7, 0, 0, 8, 0, 0, 7, 0],
+        "harp_track": [1, 0, 4, 0, 7, 0, 4, 0, 2, 0, 5, 0, 8, 0, 5, 0],
+        "cello_track": [1] + [0] * 7 + [2] + [0] * 7,
+        "flute_track": [0] * 16,
+        "voices": {"celesta": "musicbox", "flute": "choir", "harp": "accordion"},
+    }
+    base.update(kw)
+    return base
+
+
+async def test_custom_melody(client):
+    h = session_headers("m8")
+    res = await client.post("/api/memorials", json=payload(melody="custom", melody_custom=custom_melody()), headers=h)
+    assert res.status_code == 201, res.text
+    got = res.json()
+    assert got["melody"] == "custom"
+    mel = got["melody_custom"]
+    assert mel["tempo_bpm"] == 72 and mel["celesta_track"][0] == 9
+    assert mel["voices"] == {"celesta": "musicbox", "flute": "choir"}  # громкий тембр (accordion) не из мягкого набора — отброшен
+    assert "drum_track" not in mel
+    again = (await client.get(f"/api/memorials/{got['id']}", headers=h)).json()
+    assert again["melody_custom"] == mel
+    # у готовых мелодий своей нет
+    other = await client.post("/api/memorials", json=payload(melody="moonlight"), headers=h)
+    assert other.json()["melody_custom"] is None
+
+
+async def test_custom_melody_validation(client):
+    h = session_headers("m9")
+    cases = [
+        None,  # нет мелодии
+        custom_melody(tempo_bpm=150),  # слишком быстро
+        custom_melody(celesta_track=[0] * 16, harp_track=[0] * 16, cello_track=[0] * 16),  # тишина
+        custom_melody(celesta_track=[1, 2, 3]),  # не 16 шагов
+        custom_melody(harp_track=[99] * 16),  # нота вне диапазона
+        custom_melody(voices={"harp": "no_such_voice"}),  # неизвестный тембр
+    ]
+    for c in cases:
+        res = await client.post("/api/memorials", json=payload(melody="custom", melody_custom=c), headers=h)
+        assert res.status_code == 422, c

@@ -124,6 +124,9 @@ def _add_memorial_ball(conn: Connection) -> None:
     if "melody" not in cols:
         conn.execute(text("ALTER TABLE memorials ADD COLUMN melody VARCHAR(24) NOT NULL DEFAULT 'quiet_candle'"))
         logger.info("[Migrate] memorials.melody добавлена.")
+    if "melody_custom" not in cols:
+        conn.execute(text("ALTER TABLE memorials ADD COLUMN melody_custom JSON NULL"))
+        logger.info("[Migrate] memorials.melody_custom добавлена.")
 
 
 def run_migrations(conn: Connection) -> None:
