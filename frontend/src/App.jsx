@@ -10,6 +10,8 @@ import { VerticalTiltShiftShader } from "three/examples/jsm/shaders/VerticalTilt
 import { createRealisticFir, createCapLoopGeometry } from "./scene/realisticFir.js";
 import { createClearing } from "./scene/clearing.js";
 import { createVoxResidents } from "./scene/voxResidents.js";
+import { createMemoryTier } from "./scene/memoryTier.js";
+import { MemorySheet } from "./ui/MemoryTier.jsx";
 import { SNOW_Y } from "./scene/realisticFir.js";
 import { TIME_OF_DAY, WEATHER_PRESETS, createAtmosphereController } from "./scene/atmosphere.js";
 import { createFireworks3D } from "./scene/fireworks3d.js";
@@ -35,6 +37,7 @@ import {
   createGift as apiCreateGift,
   deleteMyData,
   fetchWorldStats,
+  fetchMemorials,
   fetchCandleLeaders as apiFetchCandleLeaders,
   fetchCandleStatus as apiFetchCandleStatus,
   fetchAchievements as apiFetchAchievements,
@@ -965,6 +968,13 @@ function deepLinkGiftId() {
   return m ? m[1] : new URLSearchParams(window.location.search).get("gift");
 }
 
+// /memory/<id> — ссылка на память на «Ярусе памяти»
+function deepLinkMemoryId() {
+  if (typeof window === "undefined") return null;
+  const m = window.location.pathname.match(/^\/memory\/([0-9a-fA-F-]{8,40})\/?$/);
+  return m ? m[1] : null;
+}
+
 const INVITE_TEXT = "Я повесил шар на Всемирную ёлку — зажги свечу 🕯";
 
 // Ссылка «открыть этот шар на Ёлке»: /g/<id>
@@ -1443,7 +1453,7 @@ export function computeFibonacciSpiralSlot(sequenceNumber) {
 // нижний — над снежной «юбкой». Шаг подстраивается под число шаров, поэтому
 // ни 10, ни 500 подарков не уходят ни в звезду, ни под снег.
 const DISPLAY_TOP_Y = 6.2; // y_height верхнего шара (мир: 60 - 6.2 = 53.8)
-const DISPLAY_BOTTOM_Y = 58.2; // y_height нижнего шара (мир ≈ 1.8)
+const DISPLAY_BOTTOM_Y = 52.2; // y_height нижнего шара (мир ≈ 7.8); ниже — «Ярус памяти»
 const DISPLAY_MAX_STEP = 1.15;
 export function computeDisplaySlot(sequenceNumber, total) {
   const base = computeFibonacciSpiralSlot(sequenceNumber);
@@ -4932,9 +4942,47 @@ function WelcomeGuideModal({ isOpen, onClose, onStart, maxGifts = 3 }) {
 const glassPanel =
   "bg-[#070d1c]/80 backdrop-blur-xl border border-white/10 shadow-[0_10px_40px_rgba(0,0,0,0.45)]";
 
+// Общий счётчик на главном экране: «Сегодня 🕯 N · 🎁 M», тап — неделя / всего
+const PILL_PERIODS = [
+  ["today", "Сегодня"],
+  ["week", "За неделю"],
+  ["total", "Всего"],
+];
+function TodayPill() {
+  const [stats, setStats] = useState(null);
+  const [idx, setIdx] = useState(0);
+  useEffect(() => {
+    let alive = true;
+    const load = () => fetchWorldStats().then((d) => alive && setStats(d)).catch(() => {});
+    load();
+    const t = setInterval(() => document.visibilityState === "visible" && load(), 60000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, []);
+  if (!stats) return null;
+  const [key, label] = PILL_PERIODS[idx];
+  const cur = stats[key] || { candles: 0, gifts: 0 };
+  const fmt = (n) => Number(n || 0).toLocaleString("ru-RU");
+  return (
+    <button
+      type="button"
+      onClick={() => setIdx((i) => (i + 1) % PILL_PERIODS.length)}
+      title="Нажмите, чтобы переключить период"
+      aria-label={`${label}: ${cur.candles} свечей, ${cur.gifts} шаров`}
+      className={`${glassPanel} pointer-events-auto rounded-full px-3 py-1 text-[11px] text-slate-200 whitespace-nowrap tabular-nums`}
+    >
+      <span className="text-slate-400">{label}</span> 🕯 <b className="text-amber-100 font-semibold">{fmt(cur.candles)}</b> · 🎁{" "}
+      <b className="text-amber-100 font-semibold">{fmt(cur.gifts)}</b>
+    </button>
+  );
+}
+
 function NewLookTopBar({ countdownText, isOfflineMode, onOpenRing, onOpenWorkshop, onOpenMenu, onOpenMine }) {
   return (
     <div className="fixed top-3 left-3 right-3 z-30 flex items-start justify-between gap-2 pointer-events-none">
+      <div className="flex flex-col items-start gap-1.5 min-w-0">
       <button
         type="button"
         onClick={onOpenRing}
@@ -4948,6 +4996,8 @@ function NewLookTopBar({ countdownText, isOfflineMode, onOpenRing, onOpenWorksho
           <span className="hidden sm:inline">до Кольца Чудес </span>⏳ {countdownText}
         </div>
       </button>
+      <TodayPill />
+      </div>
       <div className="flex items-center gap-2 pointer-events-auto shrink-0">
         <button
           type="button"
@@ -5572,6 +5622,12 @@ function NewLookMenu({
           </div>
         </MenuSection>
 
+        <MenuSection title="Ярус памяти">
+          <button type="button" onClick={fest.onMemory} className={`${chip(false)} w-full text-left`}>
+            🕊 Портреты тех, кого с нами нет
+          </button>
+        </MenuSection>
+
         <MenuSection title="Праздник">
           <div className="grid grid-cols-2 gap-1.5">
             <button type="button" onClick={fest.onAdvent} className={`${chip(false)} relative`}>
@@ -5857,6 +5913,9 @@ export default function App() {
   const timeOfDayRef = useRef("night");
   const newWeatherRef = useRef(WEATHER_PRESETS[0]);
   const cameraFocusRef = useRef(null);
+  const memoryTierRef = useRef(null);
+  const memorialsRef = useRef([]);
+  const openMemoryRef = useRef(null);
   const snowDensityRef = useRef(LOOK_NEW ? 0.35 : 0.7);
 
   const [selectedGift, setSelectedGift] = useState(null);
@@ -7582,6 +7641,7 @@ export default function App() {
     let fir = null;
     let clearing = null;
     let residents = null;
+    let memoryTier = null;
     let atmosphere = null;
     let fireworks3d = null;
     let lastElapsed = 0;
@@ -7639,6 +7699,15 @@ export default function App() {
         obstacles: [...clearing.obstacles],
       });
       scene.add(residents.group);
+
+      // «Ярус памяти»: пиксельные ангелы с портретами на нижнем ярусе
+      memoryTier = createMemoryTier({
+        radiusAt: (worldY) => getConeEnvelopeRadius(60 - worldY) + 1.25,
+        isMobile: isMobileGpu,
+      });
+      scene.add(memoryTier.group);
+      memoryTierRef.current = memoryTier;
+      memoryTier.setMemorials(memorialsRef.current);
 
       // Шары — как настоящие ёлочные игрушки: без пьедестала и «пики»-свечи,
       // с классическим колпачком и петелькой, за которую они подвешены на нити
@@ -7848,6 +7917,11 @@ export default function App() {
       pointer.y = -((clientY - rect.top) / rect.height) * 2 + 1;
 
       raycaster.setFromCamera(pointer, camera);
+      const memoryHit = memoryTier?.pick(raycaster);
+      if (memoryHit) {
+        openMemoryRef.current?.(memoryHit);
+        return;
+      }
       const targets = [
         glassGlobeMeshRef.current,
         pedestalBaseMeshRef.current,
@@ -7920,6 +7994,7 @@ export default function App() {
         atmosphere?.update(Math.min(0.1, elapsed - lastElapsed), elapsed);
         fireworks3d?.update(Math.min(0.1, elapsed - lastElapsed));
         residents?.update(elapsed, elapsed - lastElapsed);
+        memoryTier?.update(elapsed);
         lastElapsed = elapsed;
         if (!perf.done) {
           if (elapsed > 2.5) {
@@ -8191,6 +8266,10 @@ export default function App() {
       }
       if (clearing) clearing.dispose();
       if (residents) residents.dispose();
+      if (memoryTier) {
+        memoryTier.dispose();
+        memoryTierRef.current = null;
+      }
       if (atmosphere) {
         atmosphere.dispose();
         atmosphereRef.current = null;
@@ -8463,6 +8542,31 @@ export default function App() {
   const [editingGift, setEditingGift] = useState(null);
   const [inviteGift, setInviteGift] = useState(null);
   const [myGiftsSheet, setMyGiftsSheet] = useState(null); // null | "mine" | "lit"
+  // «Ярус памяти»: null | { openId?, create? }
+  const [memorySheet, setMemorySheet] = useState(() => {
+    const id = deepLinkMemoryId();
+    return id ? { openId: id } : null;
+  });
+  const reloadMemorials = () =>
+    fetchMemorials()
+      .then((d) => {
+        memorialsRef.current = d.items || [];
+        memoryTierRef.current?.setMemorials(memorialsRef.current);
+      })
+      .catch(() => {});
+  useEffect(() => {
+    reloadMemorials();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  openMemoryRef.current = (id) => setMemorySheet({ openId: id });
+  const showMemoryOnTree = (m) => {
+    const slot = memoryTierRef.current?.slotOf(m.id);
+    setMemorySheet(null);
+    if (!slot) return;
+    cameraFocusRef.current = { angle: slot.angle, x: slot.x, y: slot.y + 1.2, z: slot.z };
+    scrollTargetRef.current = Math.min(MAX_SCROLL_DEPTH, Math.max(0, 60 - slot.y - 1.5));
+    zoomTargetRef.current = 0.55;
+  };
   const [collection, setCollection] = useState(null);
   const [collectionLoading, setCollectionLoading] = useState(false);
   const [collectionError, setCollectionError] = useState(false);
@@ -8727,6 +8831,10 @@ export default function App() {
         fest={{
           cityInfo,
           onMine: openMyGifts,
+          onMemory: () => {
+            setIsMenuOpen(false);
+            setMemorySheet({});
+          },
           onAdvent: () => {
             setIsMenuOpen(false);
             setIsAdventOpen(true);
@@ -9349,6 +9457,19 @@ export default function App() {
         />
       )}
       {isAchOpen && <AchievementsModal data={achievements} onClose={() => setIsAchOpen(false)} />}
+
+      {memorySheet && (
+        <MemorySheet
+          openId={memorySheet.openId || null}
+          startCreate={Boolean(memorySheet.create)}
+          onClose={() => {
+            setMemorySheet(null);
+            if (deepLinkMemoryId()) window.history.replaceState(null, "", "/");
+          }}
+          onChanged={reloadMemorials}
+          onShowOnTree={showMemoryOnTree}
+        />
+      )}
 
       {myGiftsSheet && (
         <MyGiftsSheet

@@ -44,6 +44,12 @@ DAILY_CANDLES = max(1, _env_int("DAILY_CANDLES", 3))
 # просто кнопка «Уведомления» сообщает, что бот не подключён.
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_BOT_USERNAME = os.getenv("TELEGRAM_BOT_USERNAME", "").strip().lstrip("@")
+# Чат модератора «Яруса памяти» (узнать id: написать боту /myid)
+TELEGRAM_ADMIN_CHAT_ID = os.getenv("TELEGRAM_ADMIN_CHAT_ID", "").strip()
+# Отпечатки памяти в Bitcoin через OpenTimestamps (бесплатно, без кошелька)
+OTS_ENABLED = os.getenv("OTS_ENABLED", "1") == "1"
+OTS_CALENDARS = [u.strip() for u in os.getenv("OTS_CALENDARS", "https://a.pool.opentimestamps.org,https://b.pool.opentimestamps.org,https://a.pool.eternitywall.com").split(",") if u.strip()]
+MEMORIALS_PER_SESSION = int(os.getenv("MEMORIALS_PER_SESSION", "3"))
 # Бот в мессенджере MAX (platform-api.max.ru): те же уведомления, что и в Telegram.
 MAX_BOT_TOKEN = os.getenv("MAX_BOT_TOKEN", "").strip()
 MAX_BOT_USERNAME = os.getenv("MAX_BOT_USERNAME", "").strip().lstrip("@")

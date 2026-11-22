@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, JSON, LargeBinary, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -156,3 +156,59 @@ class ExchangeRingHandshake(Base):
     giver: Mapped["User"] = relationship("User", foreign_keys=[giver_user_id], lazy="selectin")
     receiver: Mapped["User"] = relationship("User", foreign_keys=[receiver_user_id], lazy="selectin")
     gift: Mapped["Gift"] = relationship("Gift", foreign_keys=[gift_id], lazy="selectin")
+
+
+class Memorial(Base):
+    """«Ярус памяти»: пиксельный портрет человека, ушедшего из жизни.
+
+    Создаёт близкий родственник или наследник (ч. 7 ст. 9 152-ФЗ, ст. 152.1 ГК РФ).
+    Показывается только после модерации. Отпечаток записи (SHA-256 от
+    record_json) фиксируется в Bitcoin через OpenTimestamps — в цепочку уходит
+    только хеш, сами данные можно удалить в любой момент.
+    """
+
+    __tablename__ = "memorials"
+    __table_args__ = (Index("ix_memorials_status_created", "status", "created_at"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    creator_hash: Mapped[str] = mapped_column(String(128), index=True)
+    full_name: Mapped[str] = mapped_column(String(80))
+    birth_date: Mapped[str] = mapped_column(String(10), default="")  # ГГГГ или ГГГГ-ММ-ДД
+    death_date: Mapped[str] = mapped_column(String(10))  # ГГГГ-ММ-ДД
+    epitaph: Mapped[str] = mapped_column(String(240), default="")
+    relation: Mapped[str] = mapped_column(String(24), default="")
+    # {"w","h","palette":[...], "px": base64(индексы, 255 — пусто), "depth": base64(0..15)}
+    portrait: Mapped[dict] = mapped_column(JSON)
+    status: Mapped[str] = mapped_column(String(12), default="pending")  # pending|approved|rejected
+    candles_count: Mapped[int] = mapped_column(Integer, default=0)
+    consent_version: Mapped[str] = mapped_column(String(20), default="")
+    record_json: Mapped[str] = mapped_column(Text, default="")
+    record_hash: Mapped[str] = mapped_column(String(64), default="")
+    ots_status: Mapped[str] = mapped_column(String(12), default="none")  # none|submitted|failed
+    ots_proof: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True, default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+
+
+class MemorialCandle(Base):
+    """Свеча памяти: одна сессия — одна свеча на память в сутки (не тратит свечи дня)."""
+
+    __tablename__ = "memorial_candles"
+    __table_args__ = (UniqueConstraint("memorial_id", "voter_hash", "day", name="uq_memorial_candles"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    memorial_id: Mapped[str] = mapped_column(String(36), ForeignKey("memorials.id"), index=True)
+    voter_hash: Mapped[str] = mapped_column(String(128))
+    day: Mapped[str] = mapped_column(String(10))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class MemorialReport(Base):
+    __tablename__ = "memorial_reports"
+    __table_args__ = (UniqueConstraint("memorial_id", "reporter_hash", name="uq_memorial_reports"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    memorial_id: Mapped[str] = mapped_column(String(36), ForeignKey("memorials.id"), index=True)
+    reporter_hash: Mapped[str] = mapped_column(String(128))
+    reason: Mapped[str] = mapped_column(String(16), default="other")  # alive|not_relative|other
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)

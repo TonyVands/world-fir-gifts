@@ -20,6 +20,7 @@ from sqlalchemy import delete, func, select
 from app.core import config
 from app.core.unlock import get_unlock_timestamp
 import html
+import json
 
 from app.models import AppFlag, CandleLight, Gift, MaxLink, TelegramLink, User
 from app.services import max_bot
@@ -144,8 +145,83 @@ async def notify_candle(gift_id: str) -> None:
 # ---------------------------------------------------------------------------
 # Входящие сообщения бота
 # ---------------------------------------------------------------------------
+async def send_memorial_for_review(memorial_id: str) -> bool:
+    """Модератору: портрет памяти с кнопками «Показать» / «Отклонить»."""
+    if not (enabled() and config.TELEGRAM_ADMIN_CHAT_ID and _session_factory is not None):
+        return False
+    from app.models import Memorial
+    from app.services import memorial as memsvc
+
+    async with _session_factory() as session:
+        m = await session.get(Memorial, memorial_id)
+        if m is None:
+            return False
+        try:
+            png = memsvc.portrait_png(m.portrait, scale=8)
+        except ValueError:
+            png = b""
+        years = f"{m.birth_date[:4] + ' – ' if m.birth_date else ''}{m.death_date}"
+        caption = (
+            f"🕊 Новая память на проверку\n<b>{_esc(m.full_name)}</b>, {_esc(years)}\n"
+            f"Кем приходится: {_esc(m.relation or '—')}\n«{_esc(m.epitaph or '')}»"
+        )[:1000]
+    markup = {
+        "inline_keyboard": [[
+            {"text": "✅ Показать", "callback_data": f"mem:ok:{memorial_id}"},
+            {"text": "❌ Отклонить", "callback_data": f"mem:no:{memorial_id}"},
+        ]]
+    }
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            res = await client.post(
+                API.format(token=config.TELEGRAM_BOT_TOKEN, method="sendPhoto"),
+                data={
+                    "chat_id": config.TELEGRAM_ADMIN_CHAT_ID,
+                    "caption": caption,
+                    "parse_mode": "HTML",
+                    "reply_markup": json.dumps(markup),
+                },
+                files={"photo": ("portrait.png", png, "image/png")},
+            )
+            return bool(res.json().get("ok"))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[Telegram] не удалось отправить память на проверку: %s", exc)
+        return False
+
+
+async def _handle_callback(session, cq: dict) -> str | None:
+    data = cq.get("data") or ""
+    chat_id = str(((cq.get("message") or {}).get("chat") or {}).get("id") or "")
+    if not data.startswith("mem:") or not config.TELEGRAM_ADMIN_CHAT_ID or chat_id != config.TELEGRAM_ADMIN_CHAT_ID:
+        await _call("answerCallbackQuery", {"callback_query_id": cq.get("id", ""), "text": "Нет доступа"})
+        return None
+    from app.models import Memorial
+    from app.services import memorial as memsvc
+
+    _, action, mid = (data.split(":", 2) + ["", ""])[:3]
+    m = await session.get(Memorial, mid)
+    if m is None:
+        answer = "Память уже удалена"
+    else:
+        await memsvc.decide(session, m, approve=(action == "ok"))
+        answer = "Показана на Ёлке 🕊" if action == "ok" else "Отклонена"
+        msg = cq.get("message") or {}
+        await _call(
+            "editMessageCaption",
+            {
+                "chat_id": chat_id,
+                "message_id": msg.get("message_id"),
+                "caption": ((msg.get("caption") or "") + f"\n\n→ {answer}")[:1000],
+            },
+        )
+    await _call("answerCallbackQuery", {"callback_query_id": cq.get("id", ""), "text": answer})
+    return answer
+
+
 async def handle_update(session, update: dict) -> str | None:
     """Обрабатывает одно обновление; возвращает текст ответа (для тестов)."""
+    if update.get("callback_query"):
+        return await _handle_callback(session, update["callback_query"])
     msg = update.get("message") or {}
     chat_id = str((msg.get("chat") or {}).get("id") or "")
     text = (msg.get("text") or "").strip()
@@ -173,6 +249,8 @@ async def handle_update(session, update: dict) -> str | None:
             reply = "Привет! Я бот Всемирной ёлки подарков 🎄 Подключите уведомления на сайте: Меню → «Уведомления»."
             if _site_url:
                 reply += f"\n{_site_url}"
+    elif text.startswith("/myid"):
+        reply = f"id этого чата: {chat_id}\nЧтобы получать сюда памяти на проверку, укажите его в TELEGRAM_ADMIN_CHAT_ID."
     elif text.startswith("/stop"):
         await session.execute(delete(TelegramLink).where(TelegramLink.chat_id == chat_id))
         await session.commit()
@@ -192,7 +270,7 @@ async def _poll_loop() -> None:
     await _call("deleteWebhook", {"drop_pending_updates": False})
     offset = 0
     while True:
-        data = await _call("getUpdates", {"timeout": 25, "offset": offset, "allowed_updates": ["message"]}, timeout=35)
+        data = await _call("getUpdates", {"timeout": 25, "offset": offset, "allowed_updates": ["message", "callback_query"]}, timeout=35)
         if not data or not data.get("ok"):
             await asyncio.sleep(5)
             continue

@@ -60,9 +60,19 @@ async def delete_my_data(
     и сама запись мастера с именем, городом и контактом.
     """
     ratelimit.enforce(request, "delete_me", limit=5, window_s=600, extra_key=session_hash)
+    from app.models import Memorial
+    from app.routers.memorials import delete_memorials
+
+    mem_ids = list((await session.execute(select(Memorial.id).where(Memorial.creator_hash == session_hash))).scalars().all())
+    await delete_memorials(session, mem_ids)
+    from app.models import MemorialCandle, MemorialReport
+
+    await session.execute(delete(MemorialCandle).where(MemorialCandle.voter_hash == session_hash))
+    await session.execute(delete(MemorialReport).where(MemorialReport.reporter_hash == session_hash))
     user = await find_user_by_hash(session, session_hash)
     if user is None:
-        return {"deleted": False, "gifts": 0}
+        await session.commit()
+        return {"deleted": bool(mem_ids), "gifts": 0}
     gift_ids = list((await session.execute(select(Gift.id).where(Gift.author_id == user.id))).scalars().all())
     if gift_ids:
         await session.execute(delete(GiftCandle).where(GiftCandle.gift_id.in_(gift_ids)))

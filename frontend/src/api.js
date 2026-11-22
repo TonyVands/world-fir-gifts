@@ -252,3 +252,11 @@ export function saveLitGiftIds(set) {
     /* хранилище недоступно */
   }
 }
+
+// «Ярус памяти»
+export const fetchMemorials = () => request("/memorials");
+export const fetchMemorial = (id) => request(`/memorials/${encodeURIComponent(id)}`);
+export const createMemorial = (payload) => request("/memorials", { method: "POST", body: payload, timeoutMs: 15000 });
+export const lightMemorialCandle = (id) => request(`/memorials/${encodeURIComponent(id)}/candle`, { method: "POST" });
+export const reportMemorial = (id, reason) => request(`/memorials/${encodeURIComponent(id)}/report`, { method: "POST", body: { reason } });
+export const deleteMemorial = (id) => request(`/memorials/${encodeURIComponent(id)}`, { method: "DELETE" });

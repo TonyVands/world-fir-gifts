@@ -17,14 +17,14 @@ from app.core import config
 from app.core.security import crypto_service
 from app.database import AsyncSessionLocal, Base, engine
 from app.migrations import run_migrations
-from app.routers import gifts, handshakes, legal, ring, share, telegram, users, world, ws
+from app.routers import gifts, handshakes, legal, memorials, ring, share, telegram, users, world, ws
 from app.services import telegram as telegram_service
 from app.services.ring import ring_auto_match_loop
 from app.services.seeder import seed_initial_gifts
 
 logger = logging.getLogger("uvicorn.error")
 
-API_VERSION = "18.2.0"
+API_VERSION = "18.3.0"
 
 
 async def _rotate_and_check_contacts() -> None:
@@ -83,11 +83,18 @@ async def _purge_contacts_if_due() -> int:
 
 
 async def _purge_loop() -> None:
+    from app.services import memorial as memsvc
+
     while True:
         try:
             await _purge_contacts_if_due()
         except Exception:  # noqa: BLE001
             logger.exception("[Privacy] Не удалось стереть контакты")
+        try:
+            async with AsyncSessionLocal() as session:
+                await memsvc.retry_failed_stamps(session)
+        except Exception:  # noqa: BLE001
+            logger.exception("[OTS] Не удалось повторить отпечатки")
         await asyncio.sleep(6 * 3600)
 
 
@@ -202,6 +209,8 @@ app.include_router(world.router)
 app.include_router(telegram.router)
 app.include_router(telegram.max_router)
 app.include_router(legal.router)
+app.include_router(memorials.router)
+app.include_router(memorials.pages)
 
 
 def _db_mode() -> str:
