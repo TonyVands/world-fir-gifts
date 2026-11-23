@@ -5,6 +5,7 @@ import {
   createMemorial,
   deleteMemorial,
   fetchMemorial,
+  confirmMemorialKin,
   fetchMemorials,
   lightMemorialCandle,
   reportMemorial,
@@ -261,6 +262,95 @@ function Checkbox({ checked, onChange, children }) {
 // ---------------------------------------------------------------------------
 // Создание памяти
 // ---------------------------------------------------------------------------
+export const KIN_RELATIONS = [
+  "супруг / супруга", "сын / дочь", "внук / внучка", "мать / отец",
+  "брат / сестра", "бабушка / дедушка", "племянник / племянница",
+  "дядя / тётя", "другой близкий",
+];
+
+function KinSelect({ value, onChange, className }) {
+  return (
+    <select className={className} value={value} onChange={(e) => onChange(e.target.value)}>
+      <option value="">Кем вы приходитесь этому человеку</option>
+      {KIN_RELATIONS.map((r) => (
+        <option key={r} value={r}>{r}</option>
+      ))}
+    </select>
+  );
+}
+
+// «Родство скорбящих»: автор делится ссылкой, второй близкий подтверждает, что тоже родственник.
+function KinBlock({ m, token, onCount }) {
+  const [rel, setRel] = useState("");
+  const [ok, setOk] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(false);
+  const [err, setErr] = useState("");
+  const [copied, setCopied] = useState(false);
+  const inviteUrl = m.kin_token ? `${window.location.origin}/memory/${m.id}?kin=${m.kin_token}` : "";
+
+  const invite = async () => {
+    const text = `Я создал(а) память о «${m.full_name}» на Ёлке мира. Если вы тоже близкий человек — подтвердите: ${inviteUrl}`;
+    try {
+      if (navigator.share) await navigator.share({ title: "Подтвердить родство", text });
+      else {
+        await navigator.clipboard.writeText(text);
+        setCopied(true);
+      }
+    } catch {
+      /* отменили */
+    }
+  };
+  const confirm = async () => {
+    setBusy(true);
+    setErr("");
+    try {
+      const r = await confirmMemorialKin(m.id, { relation: rel, consent: ok, token: token || "" });
+      onCount(r.kin_count);
+      setDone(true);
+    } catch (e) {
+      setErr(e?.message || "Не получилось подтвердить.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="p-3 rounded-xl bg-white/5 border border-white/10 space-y-2 text-left">
+      <div className="text-[12px] text-slate-200 text-center">
+        {m.kin_count > 0 ? `🤝 Подтвердили близкие: ${m.kin_count}` : "Родство пока не подтверждено вторым близким"}
+        {m.relation ? <span className="text-slate-500"> · автор: {m.relation}</span> : null}
+      </div>
+      {m.mine && inviteUrl && m.kin_count < 5 && (
+        <>
+          <div className="text-[11px] text-slate-400">
+            Отправьте ссылку близкому человеку — он подтвердит родство одним нажатием. Документы не нужны.
+          </div>
+          <button type="button" onClick={invite} className="w-full py-2 rounded-lg bg-white/10 text-xs text-slate-100">
+            {copied ? "Ссылка скопирована ✓" : "✉️ Пригласить близкого подтвердить"}
+          </button>
+        </>
+      )}
+      {!m.mine && !done && m.kin_count < 5 && (
+        <div className="space-y-2">
+          <KinSelect value={rel} onChange={setRel} className="w-full rounded-lg bg-slate-900/70 border border-white/15 px-3 py-2 text-sm text-slate-100" />
+          <label className="flex gap-2 text-[11px] text-slate-300 items-start">
+            <input type="checkbox" className="mt-0.5" checked={ok} onChange={(e) => setOk(e.target.checked)} />
+            <span>
+              Я действительно близкий родственник этого человека и согласен(на) на хранение этого ответа (без имени и контактов) — <a className="underline" href="/legal/memory" target="_blank" rel="noopener">подробнее</a>.
+            </span>
+          </label>
+          {err && <div className="text-[11px] text-rose-300">{err}</div>}
+          <button type="button" disabled={!rel || !ok || busy} onClick={confirm} className="w-full py-2 rounded-lg bg-amber-200 text-slate-950 text-xs font-semibold disabled:opacity-40">
+            Подтвердить, что я близкий
+          </button>
+        </div>
+      )}
+      {done && <div className="text-[12px] text-emerald-300 text-center">Спасибо. Ваше подтверждение учтено 🤍</div>}
+    </div>
+  );
+}
+
 function CreateMemory({ onDone, onCancel, player }) {
   const [imgState, setImgState] = useState(null); // { img, url }
   const [zoom, setZoom] = useState(1.2);
@@ -334,7 +424,7 @@ function CreateMemory({ onDone, onCancel, player }) {
 
   const today = new Date().toISOString().slice(0, 10);
   const birthOk = !birth || /^\d{4}$/.test(birth) || /^\d{4}-\d{2}-\d{2}$/.test(birth);
-  const canSubmit = portrait && name.trim().length >= 2 && /^\d{4}-\d{2}-\d{2}$/.test(death) && birthOk && heir && pd && terms && (melody !== "custom" || customNoteCount(custom) >= 4) && !busy;
+  const canSubmit = portrait && name.trim().length >= 2 && /^\d{4}-\d{2}-\d{2}$/.test(death) && birthOk && relation && heir && pd && terms && (melody !== "custom" || customNoteCount(custom) >= 4) && !busy;
 
   const submit = async () => {
     setBusy(true);
@@ -345,7 +435,7 @@ function CreateMemory({ onDone, onCancel, player }) {
         birth_date: birth.trim(),
         death_date: death,
         epitaph: epitaph.trim(),
-        relation: relation.trim(),
+        relation,
         energy,
         melody,
         ...(melody === "custom" ? { melody_custom: customToApi(custom) } : {}),
@@ -415,7 +505,7 @@ function CreateMemory({ onDone, onCancel, player }) {
           </label>
         </div>
         <textarea className={input + " resize-none"} rows={2} maxLength={240} placeholder="Несколько слов памяти" value={epitaph} onChange={(e) => setEpitaph(e.target.value)} />
-        <input className={input} maxLength={24} placeholder="Кем вам приходится (внучка, сын…)" value={relation} onChange={(e) => setRelation(e.target.value)} />
+        <KinSelect value={relation} onChange={setRelation} className={input} />
       </div>
 
       <div className="space-y-2">
@@ -499,7 +589,7 @@ function CreateMemory({ onDone, onCancel, player }) {
 // ---------------------------------------------------------------------------
 // Карточка одной памяти
 // ---------------------------------------------------------------------------
-function MemoryCard({ id, initial, onBack, onChanged, onShowOnTree, player }) {
+function MemoryCard({ id, initial, kinToken = "", onBack, onChanged, onShowOnTree, player }) {
   const [m, setM] = useState(initial || null);
   const [error, setError] = useState("");
   const [lighting, setLighting] = useState(false);
@@ -509,7 +599,7 @@ function MemoryCard({ id, initial, onBack, onChanged, onShowOnTree, player }) {
 
   useEffect(() => {
     let alive = true;
-    fetchMemorial(id)
+    fetchMemorial(id, kinToken)
       .then((d) => alive && setM(d))
       .catch((e) => alive && !initial && setError(e?.message || "Память не найдена."));
     return () => {
@@ -586,6 +676,8 @@ function MemoryCard({ id, initial, onBack, onChanged, onShowOnTree, player }) {
 
       <MelodyButton melodyId={m.melody} custom={m.melody_custom} player={player} playId={`memorial-${m.id}`} />
 
+      {m.status !== "rejected" && <KinBlock m={m} token={kinToken} onCount={(n) => setM({ ...m, kin_count: n })} />}
+
       {m.status === "approved" && (
         <>
           <button
@@ -647,7 +739,7 @@ function MemoryCard({ id, initial, onBack, onChanged, onShowOnTree, player }) {
 // ---------------------------------------------------------------------------
 // Окно «Ярус памяти»
 // ---------------------------------------------------------------------------
-export function MemorySheet({ openId = null, startCreate = false, onClose, onChanged, onShowOnTree, player = null }) {
+export function MemorySheet({ openId = null, kinToken = "", startCreate = false, onClose, onChanged, onShowOnTree, player = null }) {
   const [view, setView] = useState(openId ? { kind: "card", id: openId } : startCreate ? { kind: "create" } : { kind: "list" });
   const [data, setData] = useState(null);
   const [query, setQuery] = useState("");
@@ -697,6 +789,7 @@ export function MemorySheet({ openId = null, startCreate = false, onClose, onCha
             <MemoryCard
               key={view.id}
               id={view.id}
+              kinToken={view.id === openId ? kinToken : ""}
               initial={view.initial || byId(view.id)}
               onBack={() => setView({ kind: "list" })}
               onChanged={changed}

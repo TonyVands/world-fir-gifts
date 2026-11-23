@@ -65,10 +65,11 @@ async def delete_my_data(
 
     mem_ids = list((await session.execute(select(Memorial.id).where(Memorial.creator_hash == session_hash))).scalars().all())
     await delete_memorials(session, mem_ids)
-    from app.models import MemorialCandle, MemorialReport
+    from app.models import MemorialCandle, MemorialKin, MemorialReport
 
     await session.execute(delete(MemorialCandle).where(MemorialCandle.voter_hash == session_hash))
     await session.execute(delete(MemorialReport).where(MemorialReport.reporter_hash == session_hash))
+    await session.execute(delete(MemorialKin).where(MemorialKin.confirmer_hash == session_hash))
     user = await find_user_by_hash(session, session_hash)
     if user is None:
         await session.commit()

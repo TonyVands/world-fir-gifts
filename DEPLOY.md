@@ -239,3 +239,12 @@ curl -X POST "https://<домен>/api/gifts/<gift_id>/quarantine" -H "X-Admin-T
 `melody = "custom"` и `melody_custom` (формат `MelodyInput`); сервер проверяет не меньше 4 нот,
 темп и допустимые тембры (`app/services/memorial.py → validate_custom_melody`).
 Миграция добавляет колонку `memorials.melody_custom`.
+
+### Родство скорбящих (v18.6)
+
+Родство выбирается из закрытого списка (`RELATIONS` в `app/services/memorial.py` и `KIN_RELATIONS`
+во фронтенде). Автор получает секретную ссылку `/memory/<id>?kin=<токен>` (`memorials.kin_token`),
+второй близкий по ней открывает ещё не одобренную память и подтверждает родство
+(`POST /api/memorials/{id}/kin`, таблица `memorial_kin`: хеш сессии + степень родства, до 5).
+Документы не собираются; фото остаётся в браузере; каждый портрет проходит текстовые фильтры и
+ручную модерацию в Telegram. Миграция добавляет `memorials.kin_token` и `memorials.kin_count`.

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import html
+import secrets
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -15,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core import config, ratelimit
 from app.core.auth import optional_session_hash, require_admin, require_session_hash
 from app.database import get_db
-from app.models import Memorial, MemorialCandle, MemorialReport
+from app.models import Memorial, MemorialCandle, MemorialKin, MemorialReport
 from app.services import memorial as memsvc
 from app.services import telegram as tg
 from app.services.moderation import find_text_violation
@@ -31,7 +32,7 @@ class MemorialCreate(BaseModel):
     birth_date: str = Field(default="", max_length=10)
     death_date: str = Field(min_length=10, max_length=10)
     epitaph: str = Field(default="", max_length=240)
-    relation: str = Field(default="", max_length=24)
+    relation: str = Field(max_length=24)
     energy: str = Field(default="light", max_length=16)
     melody: str = Field(default="quiet_candle", max_length=24)
     melody_custom: dict | None = None
@@ -39,6 +40,12 @@ class MemorialCreate(BaseModel):
     heir_confirm: bool = False
     pd_consent: bool = False
     terms_accepted: bool = False
+
+
+class KinConfirmIn(BaseModel):
+    relation: str = Field(max_length=24)
+    consent: bool = False
+    token: str = Field(default="", max_length=64)
 
 
 class MemorialReportIn(BaseModel):
@@ -65,17 +72,28 @@ def _dto(m: Memorial, *, mine: bool = False, lit_today: bool = False, portrait: 
         "lit_today": lit_today,
         "record_hash": m.record_hash if m.status == "approved" else "",
         "stamped": m.ots_status == "submitted",
+        "kin_count": m.kin_count or 0,
+        "relation": m.relation or "",
     }
+    if mine and m.status != "rejected":
+        out["kin_token"] = m.kin_token or ""
     if portrait:
         out["portrait"] = m.portrait
     return out
 
 
-async def _get_visible(session: AsyncSession, memorial_id: str, session_hash: str | None) -> Memorial:
+async def _get_visible(
+    session: AsyncSession, memorial_id: str, session_hash: str | None, kin_token: str = ""
+) -> Memorial:
     m = await session.get(Memorial, memorial_id)
-    if m is None or (m.status != "approved" and m.creator_hash != session_hash):
+    if m is None:
         raise HTTPException(status_code=404, detail="Память не найдена.")
-    return m
+    if m.status == "approved" or m.creator_hash == session_hash:
+        return m
+    # Второй близкий открывает ещё не одобренную память по секретной ссылке автора.
+    if m.status == "pending" and kin_token and m.kin_token and secrets.compare_digest(m.kin_token, kin_token):
+        return m
+    raise HTTPException(status_code=404, detail="Память не найдена.")
 
 
 @router.get("")
@@ -134,6 +152,8 @@ async def create_memorial(
         raise HTTPException(status_code=409, detail=f"С одного устройства можно создать до {config.MEMORIALS_PER_SESSION} памятей.")
 
     full_name, epitaph, relation = _clean(body.full_name), _clean(body.epitaph), _clean(body.relation)
+    if relation not in memsvc.RELATIONS:
+        raise HTTPException(status_code=422, detail="Выберите, кем вы приходитесь человеку, из списка.")
     for field, value in (("Имя", full_name), ("Слова памяти", epitaph), ("Кем приходится", relation)):
         if value and find_text_violation(value):
             raise HTTPException(status_code=422, detail=f"«{field}»: текст не прошёл проверку.")
@@ -151,6 +171,7 @@ async def create_memorial(
         death_date=body.death_date.strip(),
         epitaph=epitaph,
         relation=relation,
+        kin_token=secrets.token_urlsafe(18),
         energy=body.energy if body.energy in memsvc.ENERGIES else "light",
         melody=body.melody if body.melody in memsvc.MELODIES else "quiet_candle",
         melody_custom=custom,
@@ -188,10 +209,11 @@ async def admin_moderate(memorial_id: str, approve: bool = True, session: AsyncS
 @router.get("/{memorial_id}")
 async def get_memorial(
     memorial_id: str,
+    kin: str = "",
     session: AsyncSession = Depends(get_db),
     session_hash: str | None = Depends(optional_session_hash),
 ):
-    m = await _get_visible(session, memorial_id, session_hash)
+    m = await _get_visible(session, memorial_id, session_hash, kin)
     lit = False
     if session_hash:
         lit = (
@@ -204,6 +226,35 @@ async def get_memorial(
             )
         ).first() is not None
     return _dto(m, mine=m.creator_hash == session_hash, lit_today=lit)
+
+
+@router.post("/{memorial_id}/kin")
+async def confirm_kin(
+    memorial_id: str,
+    body: KinConfirmIn,
+    request: Request,
+    session: AsyncSession = Depends(get_db),
+    session_hash: str = Depends(require_session_hash),
+):
+    """«Я тоже близкий»: второй человек подтверждает родство (без документов)."""
+    ratelimit.enforce(request, "memorial_kin", limit=10, window_s=3600, extra_key=session_hash)
+    if not body.consent:
+        raise HTTPException(status_code=422, detail="Подтвердите, что вы близкий человек, и дайте согласие.")
+    if body.relation not in memsvc.RELATIONS:
+        raise HTTPException(status_code=422, detail="Выберите степень родства из списка.")
+    m = await _get_visible(session, memorial_id, session_hash, body.token)
+    if m.creator_hash == session_hash:
+        raise HTTPException(status_code=409, detail="Подтвердить должен другой близкий человек.")
+    if (m.kin_count or 0) >= memsvc.KIN_MAX:
+        raise HTTPException(status_code=409, detail="Достаточно подтверждений.")
+    session.add(MemorialKin(memorial_id=m.id, confirmer_hash=session_hash, relation=body.relation))
+    m.kin_count = (m.kin_count or 0) + 1
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        raise HTTPException(status_code=409, detail="Вы уже подтвердили родство.") from None
+    return {"kin_count": m.kin_count}
 
 
 @router.post("/{memorial_id}/candle")
@@ -282,6 +333,7 @@ async def delete_memorials(session: AsyncSession, ids: list[str]) -> None:
         return
     await session.execute(delete(MemorialCandle).where(MemorialCandle.memorial_id.in_(ids)))
     await session.execute(delete(MemorialReport).where(MemorialReport.memorial_id.in_(ids)))
+    await session.execute(delete(MemorialKin).where(MemorialKin.memorial_id.in_(ids)))
     await session.execute(delete(Memorial).where(Memorial.id.in_(ids)))
 
 

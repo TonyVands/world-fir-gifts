@@ -129,9 +129,22 @@ def _add_memorial_ball(conn: Connection) -> None:
         logger.info("[Migrate] memorials.melody_custom добавлена.")
 
 
+def _add_memorial_kin(conn: Connection) -> None:
+    cols = _columns(conn, "memorials")
+    if not cols:
+        return
+    if "kin_token" not in cols:
+        conn.execute(text("ALTER TABLE memorials ADD COLUMN kin_token VARCHAR(32) NOT NULL DEFAULT ''"))
+        logger.info("[Migrate] memorials.kin_token добавлена.")
+    if "kin_count" not in cols:
+        conn.execute(text("ALTER TABLE memorials ADD COLUMN kin_count INTEGER NOT NULL DEFAULT 0"))
+        logger.info("[Migrate] memorials.kin_count добавлена.")
+
+
 def run_migrations(conn: Connection) -> None:
     _add_is_demo(conn)
     _add_memorial_ball(conn)
+    _add_memorial_kin(conn)
     _add_user_consent(conn)
     _add_gift_edited_at(conn)
     _mark_demo_users(conn)

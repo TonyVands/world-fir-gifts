@@ -27,7 +27,7 @@ def payload(**kw):
         "birth_date": "1941",
         "death_date": "2019-03-08",
         "epitaph": "Пекла самые вкусные пироги",
-        "relation": "внучка",
+        "relation": "внук / внучка",
         "energy": "warm",
         "melody": "moonlight",
         "portrait": portrait(),
@@ -190,3 +190,41 @@ async def test_custom_melody_validation(client):
     for c in cases:
         res = await client.post("/api/memorials", json=payload(melody="custom", melody_custom=c), headers=h)
         assert res.status_code == 422, c
+
+
+async def test_relation_must_be_from_list(client):
+    h = session_headers("k0")
+    assert (await client.post("/api/memorials", json=payload(relation="кто угодно"), headers=h)).status_code == 422
+    assert (await client.post("/api/memorials", json=payload(relation=""), headers=h)).status_code == 422
+
+
+async def test_kin_confirmation(client):
+    owner, kin, other = session_headers("k1"), session_headers("k2"), session_headers("k3")
+    res = await client.post("/api/memorials", json=payload(), headers=owner)
+    mid, token = res.json()["id"], res.json()["kin_token"]
+    assert token and res.json()["kin_count"] == 0
+
+    # Чужим токен не виден
+    assert "kin_token" not in (await client.get(f"/api/memorials/{mid}?kin={token}", headers=kin)).json()
+    # Без токена до одобрения — 404, с токеном — видно
+    assert (await client.get(f"/api/memorials/{mid}", headers=kin)).status_code == 404
+    assert (await client.get(f"/api/memorials/{mid}?kin=wrong", headers=kin)).status_code == 404
+    assert (await client.get(f"/api/memorials/{mid}?kin={token}", headers=kin)).status_code == 200
+
+    body = {"relation": "сын / дочь", "consent": True, "token": token}
+    # Автор не может подтверждать сам себя; без согласия и с левой степенью — 422; без токена — 404
+    assert (await client.post(f"/api/memorials/{mid}/kin", json=body, headers=owner)).status_code == 409
+    assert (await client.post(f"/api/memorials/{mid}/kin", json={**body, "consent": False}, headers=kin)).status_code == 422
+    assert (await client.post(f"/api/memorials/{mid}/kin", json={**body, "relation": "друг"}, headers=kin)).status_code == 422
+    assert (await client.post(f"/api/memorials/{mid}/kin", json={**body, "token": ""}, headers=other)).status_code == 404
+
+    ok = await client.post(f"/api/memorials/{mid}/kin", json=body, headers=kin)
+    assert ok.status_code == 200 and ok.json()["kin_count"] == 1
+    assert (await client.post(f"/api/memorials/{mid}/kin", json=body, headers=kin)).status_code == 409
+
+    # После одобрения токен не нужен, счётчик виден всем
+    await client.post(f"/api/memorials/{mid}/moderate?approve=true", headers=ADMIN_HEADERS)
+    pub = (await client.get(f"/api/memorials/{mid}", headers=other)).json()
+    assert pub["kin_count"] == 1 and "kin_token" not in pub
+    again = await client.post(f"/api/memorials/{mid}/kin", json={**body, "relation": "внук / внучка", "token": ""}, headers=other)
+    assert again.status_code == 200 and again.json()["kin_count"] == 2

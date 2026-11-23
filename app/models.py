@@ -191,6 +191,10 @@ class Memorial(Base):
     record_hash: Mapped[str] = mapped_column(String(64), default="")
     ots_status: Mapped[str] = mapped_column(String(12), default="none")  # none|submitted|failed
     ots_proof: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True, default=None)
+    # Родство скорбящих: секретный токен ссылки-приглашения (видит только автор)
+    # и число подтвердивших «я тоже близкий» (без документов, только степень родства).
+    kin_token: Mapped[str] = mapped_column(String(32), default="")
+    kin_count: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
 
@@ -205,6 +209,19 @@ class MemorialCandle(Base):
     memorial_id: Mapped[str] = mapped_column(String(36), ForeignKey("memorials.id"), index=True)
     voter_hash: Mapped[str] = mapped_column(String(128))
     day: Mapped[str] = mapped_column(String(10))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class MemorialKin(Base):
+    """Подтверждение родства вторым близким человеком (анонимный хеш сессии + степень родства)."""
+
+    __tablename__ = "memorial_kin"
+    __table_args__ = (UniqueConstraint("memorial_id", "confirmer_hash", name="uq_memorial_kin"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    memorial_id: Mapped[str] = mapped_column(String(36), ForeignKey("memorials.id"), index=True)
+    confirmer_hash: Mapped[str] = mapped_column(String(128))
+    relation: Mapped[str] = mapped_column(String(24))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 

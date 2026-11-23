@@ -975,6 +975,12 @@ function deepLinkMemoryId() {
   return m ? m[1] : null;
 }
 
+// ?kin=<токен> — приглашение второго близкого подтвердить родство
+function deepLinkMemoryKin() {
+  if (typeof window === "undefined") return "";
+  return new URLSearchParams(window.location.search).get("kin") || "";
+}
+
 const INVITE_TEXT = "Я повесил шар на Всемирную ёлку — зажги свечу 🕯";
 
 // Ссылка «открыть этот шар на Ёлке»: /g/<id>
@@ -9476,6 +9482,7 @@ export default function App() {
       {memorySheet && (
         <MemorySheet
           openId={memorySheet.openId || null}
+          kinToken={memorySheet.openId ? deepLinkMemoryKin() : ""}
           startCreate={Boolean(memorySheet.create)}
           onClose={() => {
             setMemorySheet(null);

@@ -255,7 +255,10 @@ export function saveLitGiftIds(set) {
 
 // «Ярус памяти»
 export const fetchMemorials = () => request("/memorials");
-export const fetchMemorial = (id) => request(`/memorials/${encodeURIComponent(id)}`);
+export const fetchMemorial = (id, kin = "") =>
+  request(`/memorials/${encodeURIComponent(id)}${kin ? `?kin=${encodeURIComponent(kin)}` : ""}`);
+export const confirmMemorialKin = (id, body) =>
+  request(`/memorials/${encodeURIComponent(id)}/kin`, { method: "POST", body });
 export const createMemorial = (payload) => request("/memorials", { method: "POST", body: payload, timeoutMs: 15000 });
 export const lightMemorialCandle = (id) => request(`/memorials/${encodeURIComponent(id)}/candle`, { method: "POST" });
 export const reportMemorial = (id, reason) => request(`/memorials/${encodeURIComponent(id)}/report`, { method: "POST", body: { reason } });
