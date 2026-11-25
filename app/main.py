@@ -24,7 +24,7 @@ from app.services.seeder import seed_initial_gifts
 
 logger = logging.getLogger("uvicorn.error")
 
-API_VERSION = "18.6.0"
+API_VERSION = "18.6.1"
 
 
 async def _rotate_and_check_contacts() -> None:

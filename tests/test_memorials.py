@@ -228,3 +228,13 @@ async def test_kin_confirmation(client):
     assert pub["kin_count"] == 1 and "kin_token" not in pub
     again = await client.post(f"/api/memorials/{mid}/kin", json={**body, "relation": "внук / внучка", "token": ""}, headers=other)
     assert again.status_code == 200 and again.json()["kin_count"] == 2
+
+
+async def test_kin_count_drops_when_confirmer_deletes_data(client):
+    owner, kin = session_headers("k4"), session_headers("k5")
+    res = await client.post("/api/memorials", json=payload(), headers=owner)
+    mid, token = res.json()["id"], res.json()["kin_token"]
+    await client.post(f"/api/memorials/{mid}/kin", json={"relation": "сын / дочь", "consent": True, "token": token}, headers=kin)
+    assert (await client.get(f"/api/memorials/{mid}", headers=owner)).json()["kin_count"] == 1
+    assert (await client.delete("/api/users/me", headers=kin)).status_code == 200
+    assert (await client.get(f"/api/memorials/{mid}", headers=owner)).json()["kin_count"] == 0

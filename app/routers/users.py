@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, Request
-from sqlalchemy import delete, or_, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import config, ratelimit
@@ -69,7 +69,16 @@ async def delete_my_data(
 
     await session.execute(delete(MemorialCandle).where(MemorialCandle.voter_hash == session_hash))
     await session.execute(delete(MemorialReport).where(MemorialReport.reporter_hash == session_hash))
+    kin_mem_ids = list(
+        (await session.execute(select(MemorialKin.memorial_id).where(MemorialKin.confirmer_hash == session_hash))).scalars().all()
+    )
     await session.execute(delete(MemorialKin).where(MemorialKin.confirmer_hash == session_hash))
+    for kid in kin_mem_ids:  # пересчитать счётчик «подтвердили близкие» у затронутых памятей
+        mem = await session.get(Memorial, kid)
+        if mem is not None:
+            mem.kin_count = (
+                await session.execute(select(func.count()).select_from(MemorialKin).where(MemorialKin.memorial_id == kid))
+            ).scalar_one()
     user = await find_user_by_hash(session, session_hash)
     if user is None:
         await session.commit()
