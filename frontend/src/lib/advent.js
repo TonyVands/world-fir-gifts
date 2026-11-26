@@ -121,7 +121,7 @@ export const ADVENT_MELODIES = {
     harp: [1, 3, 4, 3, 1, 3, 4, 3, 1, 3, 4, 3, 2, 4, 6, 4],
     cello: [1, 0, 0, 0, 1, 0, 0, 0, 4, 0, 0, 0, 1, 0, 0, 0],
     flute: Array(16).fill(0),
-    drums: [1, 4, 5, 4, 2, 4, 5, 4, 1, 4, 5, 4, 2, 4, 6, 4],
+    drum_track: [1, 4, 5, 4, 2, 4, 5, 4, 1, 4, 5, 4, 2, 4, 6, 4],
     voices: { celesta: "sleighbells", harp: "piano", cello: "bass", flute: "flute" },
   },
   elochka: {
@@ -131,7 +131,7 @@ export const ADVENT_MELODIES = {
     harp: [1, 0, 3, 0, 1, 0, 3, 0, 1, 0, 3, 0, 2, 0, 4, 0],
     cello: [1, 0, 0, 0, 1, 0, 0, 0, 15, 0, 0, 0, 4, 0, 0, 0],
     flute: Array(16).fill(0),
-    drums: [0, 0, 6, 0, 0, 0, 6, 0, 0, 0, 6, 0, 0, 0, 6, 0],
+    drum_track: [0, 0, 6, 0, 0, 0, 6, 0, 0, 0, 6, 0, 0, 0, 6, 0],
     voices: { celesta: "musicbox", harp: "harp", cello: "strings", flute: "flute" },
   },
   silent: {
@@ -141,7 +141,7 @@ export const ADVENT_MELODIES = {
     harp: [1, 3, 4, 3, 1, 3, 4, 3, 1, 3, 4, 3, 1, 3, 4, 3],
     cello: [1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
     flute: Array(16).fill(0),
-    drums: Array(16).fill(0),
+    drum_track: Array(16).fill(0),
     voices: { celesta: "choir", harp: "harp", cello: "pad", flute: "flute" },
   },
 };

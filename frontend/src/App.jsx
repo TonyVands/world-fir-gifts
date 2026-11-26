@@ -1394,7 +1394,7 @@ function harmonizeOrchestraFromWish(wishText, scaleId = "pentatonic") {
     harp,
     cello,
     flute,
-    drums: [...groove],
+    drum_track: [...groove],
   };
 }
 
@@ -1486,7 +1486,7 @@ const MELODY_PRESETS = [
     harp: [1, 4, 5, 7, 5, 4, 3, 1, 2, 4, 5, 8, 7, 5, 4, 1],
     cello: [1, 0, 0, 0, 4, 0, 0, 0, 2, 0, 0, 0, 5, 0, 1, 0],
     flute: [0, 10, 0, 13, 0, 12, 0, 9, 0, 11, 0, 14, 0, 13, 10, 0],
-    drums: [1, 4, 5, 4, 2, 4, 5, 4, 1, 4, 5, 4, 2, 4, 6, 4],
+    drum_track: [1, 4, 5, 4, 2, 4, 5, 4, 1, 4, 5, 4, 2, 4, 6, 4],
   },
   {
     name: "🩰 Танец Феи Драже",
@@ -1496,7 +1496,7 @@ const MELODY_PRESETS = [
     harp: [1, 0, 4, 0, 5, 0, 4, 0, 3, 0, 5, 0, 4, 0, 1, 0],
     cello: [1, 0, 0, 0, 5, 0, 0, 0, 3, 0, 0, 0, 4, 0, 1, 0],
     flute: [0, 0, 13, 0, 0, 0, 10, 0, 0, 0, 11, 0, 9, 0, 7, 0],
-    drums: [1, 0, 3, 3, 2, 0, 4, 0, 1, 1, 3, 0, 2, 3, 6, 0],
+    drum_track: [1, 0, 3, 3, 2, 0, 4, 0, 1, 1, 3, 0, 2, 3, 6, 0],
   },
   {
     name: "🚂 Полярный Экспресс",
@@ -1506,7 +1506,7 @@ const MELODY_PRESETS = [
     harp: [1, 4, 1, 4, 5, 7, 5, 4, 2, 5, 2, 5, 4, 7, 4, 1],
     cello: [1, 0, 4, 0, 5, 0, 4, 0, 2, 0, 5, 0, 4, 0, 1, 0],
     flute: [0, 9, 10, 0, 13, 0, 10, 0, 0, 11, 13, 0, 14, 0, 13, 0],
-    drums: [1, 5, 2, 5, 1, 1, 2, 4, 1, 5, 2, 5, 1, 3, 2, 6],
+    drum_track: [1, 5, 2, 5, 1, 1, 2, 4, 1, 5, 2, 5, 1, 3, 2, 6],
   },
   {
     name: "🦉 Зимняя Колыбельная",
@@ -1516,7 +1516,7 @@ const MELODY_PRESETS = [
     harp: [1, 3, 5, 0, 4, 5, 7, 0, 3, 5, 7, 0, 2, 4, 1, 0],
     cello: [1, 0, 0, 0, 4, 0, 0, 0, 3, 0, 0, 0, 2, 0, 1, 0],
     flute: [0, 8, 0, 10, 0, 9, 0, 7, 0, 10, 0, 11, 0, 9, 7, 0],
-    drums: [1, 5, 4, 5, 2, 5, 1, 4, 1, 5, 4, 5, 2, 5, 3, 6],
+    drum_track: [1, 5, 4, 5, 2, 5, 1, 4, 1, 5, 4, 5, 2, 5, 3, 6],
   },
   {
     name: "❄️ Хрустальный Вальс",
@@ -1526,7 +1526,7 @@ const MELODY_PRESETS = [
     harp: [1, 4, 4, 1, 5, 7, 7, 5, 4, 6, 6, 4, 1, 4, 4, 1],
     cello: [1, 0, 0, 5, 0, 0, 4, 0, 0, 2, 0, 0, 1, 0, 0, 0],
     flute: [0, 10, 12, 0, 13, 14, 12, 0, 11, 9, 0, 7, 8, 9, 7, 0],
-    drums: [1, 4, 4, 2, 4, 4, 1, 4, 4, 2, 6, 4, 1, 4, 4, 6],
+    drum_track: [1, 4, 4, 2, 4, 4, 1, 4, 4, 2, 6, 4, 1, 4, 4, 6],
   },
   {
     name: "🌟 Звёздный Хорал",
@@ -1536,7 +1536,7 @@ const MELODY_PRESETS = [
     harp: [1, 2, 3, 4, 5, 4, 3, 7, 6, 5, 4, 3, 2, 4, 1, 1],
     cello: [1, 0, 3, 0, 4, 0, 7, 0, 5, 0, 4, 0, 2, 0, 1, 0],
     flute: [7, 0, 9, 0, 11, 0, 13, 0, 12, 0, 10, 0, 8, 0, 7, 0],
-    drums: [1, 0, 4, 0, 2, 0, 4, 0, 1, 0, 4, 0, 2, 0, 6, 0],
+    drum_track: [1, 0, 4, 0, 2, 0, 4, 0, 1, 0, 4, 0, 2, 0, 6, 0],
   },
   {
     name: "⚓ Огни Мурманска",
@@ -1546,7 +1546,7 @@ const MELODY_PRESETS = [
     harp: [3, 5, 7, 9, 7, 5, 3, 5, 2, 4, 6, 8, 5, 7, 3, 0],
     cello: [3, 0, 0, 0, 5, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0],
     flute: [0, 13, 0, 11, 0, 9, 0, 7, 0, 12, 0, 10, 0, 9, 0, 0],
-    drums: [1, 5, 4, 5, 2, 5, 1, 4, 1, 5, 4, 5, 2, 5, 3, 6],
+    drum_track: [1, 5, 4, 5, 2, 5, 1, 4, 1, 5, 4, 5, 2, 5, 3, 6],
   },
   {
     name: "🌲 Таёжная Сказка",
@@ -1556,7 +1556,7 @@ const MELODY_PRESETS = [
     harp: [4, 1, 4, 5, 4, 1, 4, 7, 5, 2, 5, 7, 4, 2, 1, 0],
     cello: [4, 0, 1, 0, 4, 0, 7, 0, 5, 0, 2, 0, 4, 0, 1, 0],
     flute: [10, 0, 7, 0, 9, 0, 13, 0, 14, 0, 10, 0, 9, 0, 7, 0],
-    drums: [1, 4, 5, 4, 2, 4, 5, 4, 1, 4, 5, 4, 2, 4, 6, 4],
+    drum_track: [1, 4, 5, 4, 2, 4, 5, 4, 1, 4, 5, 4, 2, 4, 6, 4],
   },
 ];
 
@@ -1616,7 +1616,7 @@ function generateProceduralGifts(count = 144) {
         harp_track: [...preset.harp],
         cello_track: [...preset.cello],
         flute_track: [...preset.flute],
-        drum_track: [...(preset.drums || DRUM_GROOVE_PRESETS[0].pattern)],
+        drum_track: [...(preset.drum_track || DRUM_GROOVE_PRESETS[0].pattern)],
       },
       card_preview: {
         teaser_tag: `${blueprint.title} • Шар #${seq + 1}`,
@@ -3637,7 +3637,7 @@ function GiftWorkshopModal({
     ...MELODY_PRESETS[0].flute,
   ]);
   const [drumTrack, setDrumTrack] = useState(() => [
-    ...MELODY_PRESETS[0].drums,
+    ...MELODY_PRESETS[0].drum_track,
   ]);
 
   const [tonicSectorIdx, setTonicSectorIdx] = useState(0);
@@ -3689,7 +3689,7 @@ function GiftWorkshopModal({
     setHarpTrack(pick(g && mel.harp_track, MELODY_PRESETS[0].harp));
     setCelloTrack(pick(g && mel.cello_track, MELODY_PRESETS[0].cello));
     setFluteTrack(pick(g && mel.flute_track, MELODY_PRESETS[0].flute));
-    setDrumTrack(pick(g && mel.drum_track, MELODY_PRESETS[0].drums));
+    setDrumTrack(pick(g && mel.drum_track, MELODY_PRESETS[0].drum_track));
     setVoices(g ? { ...DEFAULT_VOICES, ...(mel.voices || {}) } : { ...DEFAULT_VOICES, celesta: "musicbox" });
     setTeaserTag(g ? card.teaser_tag || "" : "Тёплый маяк Севера");
     setSecretWish(g ? g.secret_wish || "" : WISH_INSPIRATION_PROMPTS[0].text);
@@ -3785,7 +3785,7 @@ function GiftWorkshopModal({
     setHarpTrack(harmonized.harp);
     setCelloTrack(harmonized.cello);
     setFluteTrack(harmonized.flute);
-    setDrumTrack(harmonized.drums);
+    setDrumTrack(harmonized.drum_track);
     setAutoplayTick((t) => t + 1);
   };
 
@@ -4111,7 +4111,7 @@ function GiftWorkshopModal({
                 setHarpTrack([...m.harp]);
                 setCelloTrack([...m.cello]);
                 setFluteTrack([...m.flute]);
-                setDrumTrack([...m.drums]);
+                setDrumTrack([...m.drum_track]);
                 setVoices({ ...DEFAULT_VOICES, ...m.voices });
                 setAutoplayTick((t) => t + 1);
               }}
